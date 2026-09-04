@@ -53,17 +53,17 @@ Elegida para cumplir "sin dominio, sin VPS, gratis y confiable":
 
 ### Flujo de un comprobante
 
-1. La abuelita toca "Pasaje", elige ruta (precios ya preconfigurados), pone DNI/RUC del cliente (o "cliente varios" para boletas menores) → **Emitir**.
+1. La abuelita toca "Pasaje" (o "Encomienda", "Hospedaje"…), escribe la **descripción y el monto que ella decide**, pone DNI/RUC del cliente (o "cliente varios" para boletas menores) → **Emitir**. Para escribir menos, el sistema le sugiere sus descripciones recientes (p. ej. "Pasaje Pucallpa – San Alejandro"), pero el precio siempre lo pone ella.
 2. El sistema crea el comprobante con numeración correlativa, genera el XML, lo firma y muestra el ticket al instante (compartir por WhatsApp / imprimir).
 3. En segundo plano: facturas se envían a SUNAT de inmediato (reintentos si está caída); boletas entran al resumen diario nocturno.
 4. El CDR de SUNAT queda archivado junto al XML. Un semáforo en pantalla muestra si hay algo pendiente de envío y cuántos días de plazo quedan.
 
 ## 4. Módulos funcionales
 
-1. **Pasajes** — rutas y tarifas preconfiguradas (Pucallpa–San Alejandro, etc.), selección de carro/chofer (propio o de tercero inscrito), boleta o factura en 3 toques.
-2. **Encomiendas** — remitente, destinatario, descripción, tarifa; comprobante + **GRE-Transportista** cuando corresponda; estado entregado/pendiente.
+1. **Pasajes** — descripción libre y **precio que fija la abuelita en el momento**; selección opcional de carro/chofer (propio o de tercero inscrito); boleta o factura en 3 toques. Las descripciones usadas antes aparecen como sugerencias para no tipear de nuevo.
+2. **Encomiendas** — remitente, destinatario, descripción libre y monto que ella pone; comprobante + **GRE-Transportista** cuando corresponda; estado entregado/pendiente.
 3. **Servicios contratados** — viajes puntuales (Huánuco, Tingo María…): factura con detalle libre y precio negociado.
-4. **Hospedaje** — habitaciones y tarifas preconfiguradas; check-in simple; boleta/factura por estadía.
+4. **Hospedaje** — igual: descripción libre (p. ej. "Hospedaje 2 noches, hab. 5") y monto que ella decide; boleta/factura por estadía.
 5. **Notas de crédito** — anulación o corrección guiada ("¿qué comprobante quieres anular?") sin conocimientos técnicos.
 6. **Clientes** — autocompletado por DNI/RUC (consulta a padrones vía API gratuita) y memoria de clientes frecuentes.
 7. **Panel y reportes** — ventas del día/mes por rubro, comprobantes pendientes de envío, **exportación a Excel/CSV** para descargar en la computadora (formato listo para el contador: base para el Registro de Ventas), y backup descargable de XML+CDR.
@@ -94,7 +94,8 @@ Elegida para cumplir "sin dominio, sin VPS, gratis y confiable":
 1. **RUC** de la empresa y confirmación de razón social/dirección fiscal (para los datos del emisor en el XML).
 2. Que hagan el **trámite del certificado gratuito** en SOL (les paso el paso a paso; es 100 % en línea, sin costo).
 3. **Confirmación del contador** sobre la exoneración de IGV por Amazonía (qué operaciones van exoneradas y cuáles gravadas).
-4. Lista de **rutas y tarifas** de pasajes y encomiendas, y de **habitaciones y tarifas** del hotel.
-5. Logo (opcional) para los tickets.
+4. Logo (opcional) para los tickets.
+
+*(No hace falta lista de rutas ni tarifas: la abuelita escribe la descripción y fija el precio en cada comprobante; el sistema solo le sugiere sus descripciones recientes para escribir menos.)*
 
 > **Nota de seguridad:** la Clave SOL y el certificado digital nunca deben compartirse por chat ni subirse al repositorio. El sistema los usará solo como secretos cifrados en la infraestructura.
