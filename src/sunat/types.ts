@@ -70,6 +70,24 @@ export interface Comprobante {
   tasaIgv: number;
 }
 
+/** Catálogo 09 — motivos de nota de crédito (subset usado por el sistema). */
+export const MOTIVOS_NC: Record<string, string> = {
+  '01': 'ANULACION DE LA OPERACION',
+  '02': 'ANULACION POR ERROR EN EL RUC',
+  '06': 'DEVOLUCION TOTAL',
+};
+
+export interface NotaCredito extends Omit<Comprobante, 'tipo'> {
+  tipo: '07';
+  /** Motivo según catálogo 09 (p. ej. '01' anulación de la operación). */
+  motivoCodigo: string;
+  motivoDescripcion: string;
+  /** Comprobante que modifica. */
+  afectadoTipo: '01' | '03';
+  afectadoSerie: string;
+  afectadoCorrelativo: number;
+}
+
 /** Totales calculados de un comprobante, todo en céntimos. */
 export interface Totales {
   gravado: number; // base imponible operaciones gravadas

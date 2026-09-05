@@ -1,4 +1,4 @@
-import type { Cliente, Comprobante, LineaCalculada, Totales } from './types.js';
+import type { Cliente, Comprobante, Empresa, LineaCalculada, NotaCredito, Totales } from './types.js';
 import { calcularTotales, fmt } from './calculo.js';
 import { montoEnLetras } from './montoEnLetras.js';
 
@@ -66,14 +66,21 @@ function partyCliente(c: Cliente): string {
   );
 }
 
-function linea(idx: number, l: LineaCalculada, moneda: string, tasaIgv: number): string {
+function linea(
+  idx: number,
+  l: LineaCalculada,
+  moneda: string,
+  tasaIgv: number,
+  etiquetaLinea = 'InvoiceLine',
+  etiquetaCantidad = 'InvoicedQuantity',
+): string {
   const t = tributo(l.item.afectacion);
   const cantidad = String(l.item.cantidad);
   const percent = l.item.afectacion === '10' ? String(tasaIgv) : '0';
   return (
-    `<cac:InvoiceLine>` +
+    `<cac:${etiquetaLinea}>` +
     `<cbc:ID>${idx}</cbc:ID>` +
-    `<cbc:InvoicedQuantity unitCode="${esc(l.item.unidad)}" unitCodeListID="UN/ECE rec 20" unitCodeListAgencyName="United Nations Economic Commission for Europe">${cantidad}</cbc:InvoicedQuantity>` +
+    `<cbc:${etiquetaCantidad} unitCode="${esc(l.item.unidad)}" unitCodeListID="UN/ECE rec 20" unitCodeListAgencyName="United Nations Economic Commission for Europe">${cantidad}</cbc:${etiquetaCantidad}>` +
     `<cbc:LineExtensionAmount currencyID="${moneda}">${fmt(l.valorVenta)}</cbc:LineExtensionAmount>` +
     `<cac:PricingReference>` +
     `<cac:AlternativeConditionPrice>` +
@@ -95,7 +102,7 @@ function linea(idx: number, l: LineaCalculada, moneda: string, tasaIgv: number):
     `</cac:TaxTotal>` +
     `<cac:Item><cbc:Description><![CDATA[${l.item.descripcion}]]></cbc:Description></cac:Item>` +
     `<cac:Price><cbc:PriceAmount currencyID="${moneda}">${fmt(l.valorUnitario)}</cbc:PriceAmount></cac:Price>` +
-    `</cac:InvoiceLine>`
+    `</cac:${etiquetaLinea}>`
   );
 }
 
@@ -108,6 +115,44 @@ function taxSubtotalGlobal(base: number, igv: number, af: '10' | '20' | '30', mo
     taxScheme(tributo(af)) +
     `</cac:TaxCategory>` +
     `</cac:TaxSubtotal>`
+  );
+}
+
+function bloqueFirma(e: Empresa): string {
+  return (
+    `<cac:Signature>` +
+    `<cbc:ID>${e.ruc}</cbc:ID>` +
+    `<cac:SignatoryParty>` +
+    `<cac:PartyIdentification><cbc:ID>${e.ruc}</cbc:ID></cac:PartyIdentification>` +
+    `<cac:PartyName><cbc:Name><![CDATA[${e.razonSocial}]]></cbc:Name></cac:PartyName>` +
+    `</cac:SignatoryParty>` +
+    `<cac:DigitalSignatureAttachment><cac:ExternalReference><cbc:URI>#SignatureSP</cbc:URI></cac:ExternalReference></cac:DigitalSignatureAttachment>` +
+    `</cac:Signature>`
+  );
+}
+
+function bloqueEmisor(e: Empresa): string {
+  return (
+    `<cac:AccountingSupplierParty>` +
+    `<cac:Party>` +
+    `<cac:PartyIdentification>` +
+    `<cbc:ID schemeID="6" schemeName="Documento de Identidad" schemeAgencyName="PE:SUNAT" schemeURI="urn:pe:gob:sunat:cpe:see:gem:catalogos:catalogo06">${e.ruc}</cbc:ID>` +
+    `</cac:PartyIdentification>` +
+    `<cac:PartyName><cbc:Name><![CDATA[${e.nombreComercial ?? e.razonSocial}]]></cbc:Name></cac:PartyName>` +
+    `<cac:PartyLegalEntity>` +
+    `<cbc:RegistrationName><![CDATA[${e.razonSocial}]]></cbc:RegistrationName>` +
+    `<cac:RegistrationAddress>` +
+    `<cbc:ID>${e.ubigeo}</cbc:ID>` +
+    `<cbc:AddressTypeCode>${e.codigoEstablecimiento ?? '0000'}</cbc:AddressTypeCode>` +
+    `<cbc:CityName><![CDATA[${e.provincia}]]></cbc:CityName>` +
+    `<cbc:CountrySubentity><![CDATA[${e.departamento}]]></cbc:CountrySubentity>` +
+    `<cbc:District><![CDATA[${e.distrito}]]></cbc:District>` +
+    `<cac:AddressLine><cbc:Line><![CDATA[${e.direccion}]]></cbc:Line></cac:AddressLine>` +
+    `<cac:Country><cbc:IdentificationCode listID="ISO 3166-1" listAgencyName="United Nations Economic Commission for Europe" listName="Country">PE</cbc:IdentificationCode></cac:Country>` +
+    `</cac:RegistrationAddress>` +
+    `</cac:PartyLegalEntity>` +
+    `</cac:Party>` +
+    `</cac:AccountingSupplierParty>`
   );
 }
 
@@ -152,36 +197,8 @@ export function generarInvoiceXml(cpe: Comprobante): XmlGenerado {
     `<cbc:InvoiceTypeCode listAgencyName="PE:SUNAT" listID="0101" listName="Tipo de Documento" listURI="urn:pe:gob:sunat:cpe:see:gem:catalogos:catalogo01">${cpe.tipo}</cbc:InvoiceTypeCode>` +
     `<cbc:Note languageLocaleID="1000"><![CDATA[${leyenda}]]></cbc:Note>` +
     `<cbc:DocumentCurrencyCode listID="ISO 4217 Alpha" listName="Currency" listAgencyName="United Nations Economic Commission for Europe">${m}</cbc:DocumentCurrencyCode>` +
-    // Bloque cac:Signature (referencia informativa a la firma digital)
-    `<cac:Signature>` +
-    `<cbc:ID>${e.ruc}</cbc:ID>` +
-    `<cac:SignatoryParty>` +
-    `<cac:PartyIdentification><cbc:ID>${e.ruc}</cbc:ID></cac:PartyIdentification>` +
-    `<cac:PartyName><cbc:Name><![CDATA[${e.razonSocial}]]></cbc:Name></cac:PartyName>` +
-    `</cac:SignatoryParty>` +
-    `<cac:DigitalSignatureAttachment><cac:ExternalReference><cbc:URI>#SignatureSP</cbc:URI></cac:ExternalReference></cac:DigitalSignatureAttachment>` +
-    `</cac:Signature>` +
-    // Emisor
-    `<cac:AccountingSupplierParty>` +
-    `<cac:Party>` +
-    `<cac:PartyIdentification>` +
-    `<cbc:ID schemeID="6" schemeName="Documento de Identidad" schemeAgencyName="PE:SUNAT" schemeURI="urn:pe:gob:sunat:cpe:see:gem:catalogos:catalogo06">${e.ruc}</cbc:ID>` +
-    `</cac:PartyIdentification>` +
-    `<cac:PartyName><cbc:Name><![CDATA[${e.nombreComercial ?? e.razonSocial}]]></cbc:Name></cac:PartyName>` +
-    `<cac:PartyLegalEntity>` +
-    `<cbc:RegistrationName><![CDATA[${e.razonSocial}]]></cbc:RegistrationName>` +
-    `<cac:RegistrationAddress>` +
-    `<cbc:ID>${e.ubigeo}</cbc:ID>` +
-    `<cbc:AddressTypeCode>${e.codigoEstablecimiento ?? '0000'}</cbc:AddressTypeCode>` +
-    `<cbc:CityName><![CDATA[${e.provincia}]]></cbc:CityName>` +
-    `<cbc:CountrySubentity><![CDATA[${e.departamento}]]></cbc:CountrySubentity>` +
-    `<cbc:District><![CDATA[${e.distrito}]]></cbc:District>` +
-    `<cac:AddressLine><cbc:Line><![CDATA[${e.direccion}]]></cbc:Line></cac:AddressLine>` +
-    `<cac:Country><cbc:IdentificationCode listID="ISO 3166-1" listAgencyName="United Nations Economic Commission for Europe" listName="Country">PE</cbc:IdentificationCode></cac:Country>` +
-    `</cac:RegistrationAddress>` +
-    `</cac:PartyLegalEntity>` +
-    `</cac:Party>` +
-    `</cac:AccountingSupplierParty>` +
+    bloqueFirma(e) +
+    bloqueEmisor(e) +
     partyCliente(cpe.cliente) +
     // Forma de pago (obligatoria desde 2021): este sistema emite al contado.
     `<cac:PaymentTerms><cbc:ID>FormaPago</cbc:ID><cbc:PaymentMeansID>Contado</cbc:PaymentMeansID></cac:PaymentTerms>` +
@@ -204,4 +221,71 @@ export function generarInvoiceXml(cpe: Comprobante): XmlGenerado {
     totales,
     leyenda,
   };
+}
+
+const NS_NC = 'urn:oasis:names:specification:ubl:schema:xsd:CreditNote-2';
+
+/**
+ * Nota de Crédito electrónica (tipo 07, UBL 2.1). Las anulaciones y
+ * devoluciones SIEMPRE se hacen con nota de crédito: los comprobantes
+ * informados a SUNAT nunca se borran ni se reutilizan.
+ */
+export function generarNotaCreditoXml(nc: NotaCredito): XmlGenerado {
+  if (nc.items.length === 0) throw new Error('La nota de crédito no tiene ítems');
+  if (!/^[FB][A-Z0-9]{3}$/.test(nc.serie)) throw new Error(`Serie inválida: ${nc.serie}`);
+  if (nc.serie[0] !== nc.afectadoSerie[0]) {
+    throw new Error('La serie de la nota debe empezar con la misma letra que el comprobante afectado');
+  }
+  if (!nc.motivoCodigo || !nc.motivoDescripcion) throw new Error('Falta el motivo de la nota de crédito');
+
+  const { lineas, totales } = calcularTotales({ ...nc, tipo: nc.afectadoTipo });
+  const m = nc.moneda;
+  const id = `${nc.serie}-${nc.correlativo}`;
+  const afectadoId = `${nc.afectadoSerie}-${nc.afectadoCorrelativo}`;
+  const leyenda = montoEnLetras(totales.total, m);
+  const e = nc.emisor;
+
+  const subtotales: string[] = [];
+  if (totales.gravado > 0) subtotales.push(taxSubtotalGlobal(totales.gravado, totales.igv, '10', m));
+  if (totales.exonerado > 0) subtotales.push(taxSubtotalGlobal(totales.exonerado, 0, '20', m));
+  if (totales.inafecto > 0) subtotales.push(taxSubtotalGlobal(totales.inafecto, 0, '30', m));
+
+  const xml =
+    `<?xml version="1.0" encoding="utf-8"?>` +
+    `<CreditNote xmlns="${NS_NC}" xmlns:cac="${NS.cac}" xmlns:cbc="${NS.cbc}" xmlns:ds="${NS.ds}" xmlns:ext="${NS.ext}">` +
+    `<ext:UBLExtensions><ext:UBLExtension><ext:ExtensionContent></ext:ExtensionContent></ext:UBLExtension></ext:UBLExtensions>` +
+    `<cbc:UBLVersionID>2.1</cbc:UBLVersionID>` +
+    `<cbc:CustomizationID>2.0</cbc:CustomizationID>` +
+    `<cbc:ID>${id}</cbc:ID>` +
+    `<cbc:IssueDate>${nc.fechaEmision}</cbc:IssueDate>` +
+    `<cbc:IssueTime>${nc.horaEmision}</cbc:IssueTime>` +
+    `<cbc:Note languageLocaleID="1000"><![CDATA[${leyenda}]]></cbc:Note>` +
+    `<cbc:DocumentCurrencyCode listID="ISO 4217 Alpha" listName="Currency" listAgencyName="United Nations Economic Commission for Europe">${m}</cbc:DocumentCurrencyCode>` +
+    `<cac:DiscrepancyResponse>` +
+    `<cbc:ReferenceID>${afectadoId}</cbc:ReferenceID>` +
+    `<cbc:ResponseCode>${nc.motivoCodigo}</cbc:ResponseCode>` +
+    `<cbc:Description><![CDATA[${nc.motivoDescripcion}]]></cbc:Description>` +
+    `</cac:DiscrepancyResponse>` +
+    `<cac:BillingReference>` +
+    `<cac:InvoiceDocumentReference>` +
+    `<cbc:ID>${afectadoId}</cbc:ID>` +
+    `<cbc:DocumentTypeCode>${nc.afectadoTipo}</cbc:DocumentTypeCode>` +
+    `</cac:InvoiceDocumentReference>` +
+    `</cac:BillingReference>` +
+    bloqueFirma(e) +
+    bloqueEmisor(e) +
+    partyCliente(nc.cliente) +
+    `<cac:TaxTotal>` +
+    `<cbc:TaxAmount currencyID="${m}">${fmt(totales.igv)}</cbc:TaxAmount>` +
+    subtotales.join('') +
+    `</cac:TaxTotal>` +
+    `<cac:LegalMonetaryTotal>` +
+    `<cbc:LineExtensionAmount currencyID="${m}">${fmt(totales.gravado + totales.exonerado + totales.inafecto)}</cbc:LineExtensionAmount>` +
+    `<cbc:TaxInclusiveAmount currencyID="${m}">${fmt(totales.total)}</cbc:TaxInclusiveAmount>` +
+    `<cbc:PayableAmount currencyID="${m}">${fmt(totales.total)}</cbc:PayableAmount>` +
+    `</cac:LegalMonetaryTotal>` +
+    lineas.map((l, i) => linea(i + 1, l, m, nc.tasaIgv, 'CreditNoteLine', 'CreditedQuantity')).join('') +
+    `</CreditNote>`;
+
+  return { xml, nombre: `${e.ruc}-07-${id}`, totales, leyenda };
 }

@@ -7,7 +7,16 @@ el celular en pocos pasos y con costo cero de infraestructura
 
 Ver el plan completo del proyecto en [PLAN.md](PLAN.md).
 
-## Estado — Fases 1 y 2 completadas ✔
+## Estado — Fases 1, 2 y notas de crédito completadas ✔
+
+**Notas de crédito (tipo 07):** anulación/corrección guiada desde el ticket
+(motivos del catálogo 09: anulación de la operación, error en RUC, devolución
+total). La NC copia los ítems del original por el total, usa series propias
+(F001→FC01, B002→BC02), referencia al documento afectado
+(DiscrepancyResponse + BillingReference) y sigue su canal de envío: NC de
+factura por sendBill, NC de boleta dentro del Resumen Diario. El original
+queda marcado "anulado" y nunca se borra. Validado contra SUNAT beta:
+factura emitida y su NC ambas ACEPTADAS con CDR.
 
 **Fase 2** agrega la aplicación usable (celular y PC) y el circuito completo de boletas:
 

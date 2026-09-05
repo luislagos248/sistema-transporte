@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { generarInvoiceXml } from '../src/sunat/ubl.js';
+import { generarInvoiceXml, generarNotaCreditoXml } from '../src/sunat/ubl.js';
 import { firmarXml } from '../src/sunat/sign.js';
 import { ENDPOINTS, getStatus, sendBill, sendSummary, SunatError } from '../src/sunat/soap.js';
 import { generarResumenXml } from '../src/sunat/resumen.js';
@@ -47,6 +47,37 @@ describe.runIf(process.env.SUNAT_BETA === '1')('SUNAT beta (integración real)',
     const res = await sendBill(ENDPOINTS.beta, CRED, g.nombre, firmado);
     console.log(`Boleta ${cpe.serie}-${cpe.correlativo}: [${res.codigo}] ${res.descripcion}`, res.notas);
     expect(res.aceptado).toBe(true);
+  });
+
+  it('nota de crédito de factura aceptada por SUNAT', { timeout: 120_000 }, async () => {
+    // 1) Emitir la factura que luego se anula.
+    const f = facturaGravada();
+    f.correlativo = correlativoUnico() + 3;
+    const gf = generarInvoiceXml(f);
+    const resF = await sendBill(ENDPOINTS.beta, CRED, gf.nombre, firmarXml(gf.xml, cert));
+    expect(resF.aceptado).toBe(true);
+
+    // 2) Anularla con nota de crédito por el total.
+    const gn = generarNotaCreditoXml({
+      tipo: '07',
+      serie: 'FC01',
+      correlativo: f.correlativo,
+      fechaEmision: f.fechaEmision,
+      horaEmision: f.horaEmision,
+      moneda: 'PEN',
+      emisor: f.emisor,
+      cliente: f.cliente,
+      items: f.items,
+      tasaIgv: 18,
+      motivoCodigo: '01',
+      motivoDescripcion: 'ANULACION DE LA OPERACION',
+      afectadoTipo: '01',
+      afectadoSerie: f.serie,
+      afectadoCorrelativo: f.correlativo,
+    });
+    const resN = await sendBill(ENDPOINTS.beta, CRED, gn.nombre, firmarXml(gn.xml, cert));
+    console.log(`NC FC01-${f.correlativo} (anula F001-${f.correlativo}): [${resN.codigo}] ${resN.descripcion}`, resN.notas);
+    expect(resN.aceptado).toBe(true);
   });
 
   it('resumen diario de boletas aceptado por SUNAT (ticket)', { timeout: 120_000 }, async (ctx) => {

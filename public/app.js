@@ -73,7 +73,16 @@ const ESTADOS = {
   pendiente: { clase: 'pendiente', texto: 'Emitido ✔ · envío a SUNAT en curso' },
   aceptado:  { clase: 'aceptado',  texto: 'Aceptado por SUNAT' },
   rechazado: { clase: 'rechazado', texto: 'Rechazado — revisar' },
+  anulado:   { clase: 'rechazado', texto: 'Anulado con nota de crédito' },
 };
+
+const MOTIVOS_NC = {
+  '01': 'Anulación de la operación',
+  '02': 'Anulación por error en el RUC',
+  '06': 'Devolución total',
+};
+
+const NOMBRE_TIPO = { '01': 'Factura', '03': 'Boleta', '07': 'Nota de crédito' };
 
 /* ---------- Vistas ---------- */
 
@@ -287,8 +296,11 @@ async function vistaTicket(id) {
   $app.innerHTML = '<p class="cargando">Cargando ticket…</p>';
   const d = await api(`/api/comprobantes/${id}`);
   const emp = d.empresa;
-  const titulo = d.tipo === '01' ? 'FACTURA ELECTRÓNICA' : 'BOLETA DE VENTA ELECTRÓNICA';
-  const est = ESTADOS[d.estado] || ESTADOS.pendiente;
+  const titulo =
+    d.tipo === '01' ? 'FACTURA ELECTRÓNICA' :
+    d.tipo === '07' ? 'NOTA DE CRÉDITO ELECTRÓNICA' :
+    'BOLETA DE VENTA ELECTRÓNICA';
+  const est = d.anulado_por ? ESTADOS.anulado : (ESTADOS[d.estado] || ESTADOS.pendiente);
 
   $app.innerHTML = `
     <p class="no-imprimir" style="text-align:center"><span class="estado ${est.clase}">${est.texto}</span></p>
@@ -301,6 +313,10 @@ async function vistaTicket(id) {
         <div class="doc-titulo">${titulo}<br>${d.serie}-${d.correlativo}</div>
       </div>
       <hr>
+      ${d.referencia ? `
+        <div class="linea"><span>Modifica:</span><span>${d.referencia.tipo === '01' ? 'FACTURA' : 'BOLETA'} ${d.referencia.serie}-${d.referencia.correlativo}</span></div>
+        <div class="linea"><span>Motivo:</span><span>${esc(d.motivo_nota || '')}</span></div>
+        <hr>` : ''}
       <div class="linea"><span>Fecha:</span><span>${d.fecha_emision} ${d.hora_emision}</span></div>
       <div class="linea"><span>Cliente:</span><span>${esc(d.cliente_nombre)}</span></div>
       ${d.cliente_num_doc !== '-' ? `<div class="linea"><span>Doc:</span><span>${esc(d.cliente_num_doc)}</span></div>` : ''}
@@ -321,6 +337,20 @@ async function vistaTicket(id) {
     <div class="acciones-ticket no-imprimir">
       <button id="compartir">📲 Compartir</button>
       <button class="boton-linea" id="imprimir">🖨️ Imprimir</button>
+      ${d.anulado_por && d.anuladoPor ? `
+        <a class="boton boton-suave ancho" href="#ticket/${d.anuladoPor.id}">Ver nota de crédito ${d.anuladoPor.serie}-${d.anuladoPor.correlativo}</a>` : ''}
+      ${(d.tipo === '01' || d.tipo === '03') && !d.anulado_por && d.estado !== 'rechazado' ? `
+        <button class="boton-linea ancho" id="anular" style="color:var(--rojo);border-color:var(--rojo)">🚫 Anular (nota de crédito)</button>
+        <div class="ancho" id="confirmarAnulacion" hidden>
+          <label for="motivoNc">Motivo de la anulación</label>
+          <select id="motivoNc">
+            ${Object.entries(MOTIVOS_NC).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}
+          </select>
+          <p class="ayuda">Se emitirá una nota de crédito por el total (${S(d.total)}). El comprobante original no se borra: así lo exige SUNAT.</p>
+          <p class="error" id="errNc" hidden></p>
+          <br>
+          <button id="confirmarNc" style="background:var(--rojo);width:100%">Confirmar anulación</button>
+        </div>` : ''}
       <a class="boton boton-suave ancho" href="#home">➕ Nuevo comprobante</a>
     </div>`;
 
@@ -332,6 +362,32 @@ async function vistaTicket(id) {
   } catch { /* el QR es opcional en pantalla */ }
 
   document.getElementById('imprimir').onclick = () => window.print();
+  const $anular = document.getElementById('anular');
+  if ($anular) {
+    $anular.onclick = () => {
+      document.getElementById('confirmarAnulacion').hidden = false;
+      $anular.hidden = true;
+    };
+    document.getElementById('confirmarNc').onclick = async (ev) => {
+      const boton = ev.target;
+      const $errNc = document.getElementById('errNc');
+      $errNc.hidden = true;
+      boton.disabled = true;
+      boton.textContent = 'Emitiendo nota de crédito…';
+      try {
+        const res = await api(`/api/comprobantes/${id}/nota-credito`, {
+          method: 'POST',
+          body: JSON.stringify({ motivoCodigo: document.getElementById('motivoNc').value }),
+        });
+        location.hash = `#ticket/${res.id}`;
+      } catch (e) {
+        $errNc.textContent = e.message;
+        $errNc.hidden = false;
+        boton.disabled = false;
+        boton.textContent = 'Confirmar anulación';
+      }
+    };
+  }
   document.getElementById('compartir').onclick = async () => {
     const texto =
       `${emp.razonSocial}\n${titulo} ${d.serie}-${d.correlativo}\n` +
@@ -361,16 +417,20 @@ async function vistaLista() {
     const filas = await api(`/api/comprobantes?desde=${desde}&hasta=${hasta}`);
     const cont = document.getElementById('resultados');
     if (filas.length === 0) { cont.innerHTML = '<p class="ayuda">No hay comprobantes en ese rango.</p>'; return; }
-    const chip = (e) => { const x = ESTADOS[e] || ESTADOS.pendiente; return `<span class="estado ${x.clase}">${e}</span>`; };
+    const chip = (f) => {
+      const e = f.anulado_por ? 'anulado' : f.estado;
+      const x = ESTADOS[e] || ESTADOS.pendiente;
+      return `<span class="estado ${x.clase}">${e}</span>`;
+    };
     cont.innerHTML = `
       <div class="lista-movil">
         ${filas.map((f) => `
           <div class="comp-fila" data-id="${f.id}">
             <div>
-              <div class="num">${f.serie}-${f.correlativo} ${f.tipo === '01' ? '· Factura' : '· Boleta'}</div>
+              <div class="num">${f.serie}-${f.correlativo} · ${NOMBRE_TIPO[f.tipo] || f.tipo}</div>
               <div class="cli">${esc(f.cliente_nombre)} · ${f.fecha_emision}</div>
             </div>
-            <div class="imp">${S(f.total)}<br>${chip(f.estado)}</div>
+            <div class="imp">${S(f.total)}<br>${chip(f)}</div>
           </div>`).join('')}
       </div>
       <table class="lista-pc">
@@ -379,11 +439,11 @@ async function vistaLista() {
           ${filas.map((f) => `
             <tr data-id="${f.id}">
               <td><b>${f.serie}-${f.correlativo}</b></td>
-              <td>${f.tipo === '01' ? 'Factura' : 'Boleta'}</td>
+              <td>${NOMBRE_TIPO[f.tipo] || f.tipo}</td>
               <td>${f.fecha_emision}</td>
               <td>${esc(f.cliente_nombre)}</td>
               <td>${esc(f.cliente_num_doc)}</td>
-              <td>${chip(f.estado)}</td>
+              <td>${chip(f)}</td>
               <td class="imp">${S(f.total)}</td>
             </tr>`).join('')}
         </tbody>

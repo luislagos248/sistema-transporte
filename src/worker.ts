@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
-import type { Comprobante, Empresa, TipoDocIdentidad, AfectacionIgv } from './sunat/types.js';
-import { generarInvoiceXml } from './sunat/ubl.js';
+import type { Comprobante, Empresa, NotaCredito, TipoDocIdentidad, AfectacionIgv } from './sunat/types.js';
+import { MOTIVOS_NC } from './sunat/types.js';
+import { generarInvoiceXml, generarNotaCreditoXml } from './sunat/ubl.js';
 import { firmarXml, extraerDigest } from './sunat/sign.js';
 import { ENDPOINTS, getStatus, sendBill, sendSummary, SunatError } from './sunat/soap.js';
 import { generarResumenXml, type BoletaResumen } from './sunat/resumen.js';
@@ -170,11 +171,116 @@ app.get('/api/comprobantes', async (c) => {
   const filtro = desde && hasta ? 'WHERE fecha_emision BETWEEN ? AND ?' : '';
   const stmt = c.env.DB.prepare(
     `SELECT id, tipo, serie, correlativo, fecha_emision, hora_emision, cliente_nombre, cliente_num_doc,
-            total, total_igv, estado, cdr_codigo, cdr_descripcion
+            total, total_igv, estado, cdr_codigo, cdr_descripcion, referencia_id, anulado_por
      FROM comprobantes ${filtro} ORDER BY id DESC LIMIT 500`,
   );
   const { results } = await (filtro ? stmt.bind(desde, hasta) : stmt).all();
   return c.json(results);
+});
+
+// Anulación/corrección: emite una nota de crédito por el total del comprobante.
+app.post('/api/comprobantes/:id/nota-credito', async (c) => {
+  const id = Number(c.req.param('id'));
+  const body = await c.req.json<{ motivoCodigo?: string }>().catch(() => ({}) as { motivoCodigo?: string });
+  const motivoCodigo = body.motivoCodigo ?? '01';
+  const motivoDescripcion = MOTIVOS_NC[motivoCodigo];
+  if (!motivoDescripcion) return c.json({ error: `Motivo no soportado: ${motivoCodigo}` }, 400);
+
+  const orig = await c.env.DB.prepare('SELECT * FROM comprobantes WHERE id = ?').bind(id).first<Record<string, unknown>>();
+  if (!orig) return c.json({ error: 'No existe el comprobante' }, 404);
+  if (orig.tipo !== '01' && orig.tipo !== '03') {
+    return c.json({ error: 'Solo se puede anular una factura o boleta' }, 400);
+  }
+  if (orig.anulado_por) return c.json({ error: 'Este comprobante ya fue anulado' }, 400);
+  if (orig.estado === 'rechazado') {
+    return c.json({ error: 'Un comprobante rechazado no se anula: no fue informado a SUNAT' }, 400);
+  }
+
+  const { results: itemsOrig } = await c.env.DB.prepare(
+    'SELECT descripcion, cantidad, unidad, precio_unitario, afectacion FROM comprobante_items WHERE comprobante_id = ?',
+  )
+    .bind(id)
+    .all<Record<string, unknown>>();
+
+  // Serie de la NC: misma letra y numeración propia (F001 -> FC01, B002 -> BC02).
+  const serieNc = `${String(orig.serie)[0]}C${String(orig.serie).slice(2)}`;
+  const serie = await c.env.DB.prepare(
+    "UPDATE series SET ultimo_correlativo = ultimo_correlativo + 1 WHERE serie = ? AND tipo = '07' RETURNING ultimo_correlativo",
+  )
+    .bind(serieNc)
+    .first<{ ultimo_correlativo: number }>();
+  if (!serie) return c.json({ error: `Serie de nota de crédito no registrada: ${serieNc}` }, 400);
+
+  const { fecha, hora } = ahoraLima();
+  const nc: NotaCredito = {
+    tipo: '07',
+    serie: serieNc,
+    correlativo: serie.ultimo_correlativo,
+    fechaEmision: fecha,
+    horaEmision: hora,
+    moneda: orig.moneda as 'PEN' | 'USD',
+    emisor: empresa(c.env),
+    cliente: {
+      tipoDoc: String(orig.cliente_tipo_doc) as TipoDocIdentidad,
+      numDoc: String(orig.cliente_num_doc),
+      nombre: String(orig.cliente_nombre),
+    },
+    items: itemsOrig.map((it) => ({
+      descripcion: String(it.descripcion),
+      cantidad: Number(it.cantidad),
+      unidad: String(it.unidad),
+      precioUnitarioConImpuesto: Number(it.precio_unitario),
+      afectacion: String(it.afectacion) as AfectacionIgv,
+    })),
+    tasaIgv: 18,
+    motivoCodigo,
+    motivoDescripcion,
+    afectadoTipo: orig.tipo as '01' | '03',
+    afectadoSerie: String(orig.serie),
+    afectadoCorrelativo: Number(orig.correlativo),
+  };
+
+  let g;
+  try {
+    g = generarNotaCreditoXml(nc);
+  } catch (e) {
+    return c.json({ error: String(e instanceof Error ? e.message : e) }, 400);
+  }
+  const firmado = firmarXml(g.xml, { privateKeyPem: c.env.CERT_KEY, certPem: c.env.CERT_PEM });
+  const xmlKey = `xml/${g.nombre}.xml`;
+  await c.env.ARCHIVO.put(xmlKey, firmado);
+
+  const ins = await c.env.DB.prepare(
+    `INSERT INTO comprobantes (tipo, serie, correlativo, fecha_emision, hora_emision, moneda,
+       cliente_tipo_doc, cliente_num_doc, cliente_nombre,
+       total_gravado, total_exonerado, total_inafecto, total_igv, total, leyenda, hash_firma, xml_key,
+       referencia_id, motivo_nota)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  )
+    .bind(
+      '07', serieNc, nc.correlativo, fecha, hora, nc.moneda,
+      nc.cliente.tipoDoc, nc.cliente.numDoc, nc.cliente.nombre,
+      g.totales.gravado, g.totales.exonerado, g.totales.inafecto, g.totales.igv, g.totales.total,
+      g.leyenda, extraerDigest(firmado), xmlKey,
+      id, `${motivoCodigo} - ${motivoDescripcion}`,
+    )
+    .first<{ id: number }>();
+  const ncId = ins!.id;
+
+  const stmtItems = c.env.DB.prepare(
+    'INSERT INTO comprobante_items (comprobante_id, descripcion, cantidad, unidad, precio_unitario, afectacion) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  await c.env.DB.batch([
+    ...nc.items.map((it) => stmtItems.bind(ncId, it.descripcion, it.cantidad, it.unidad, it.precioUnitarioConImpuesto, it.afectacion)),
+    c.env.DB.prepare('UPDATE comprobantes SET anulado_por = ? WHERE id = ?').bind(ncId, id),
+  ]);
+
+  // NC de factura: envío individual. NC de boleta: como las boletas.
+  if (serieNc.startsWith('F') || c.env.MODO_ENVIO_BOLETAS === 'individual') {
+    c.executionCtx.waitUntil(enviarASunat(c.env, ncId));
+  }
+
+  return c.json({ id: ncId, numero: `${serieNc}-${nc.correlativo}`, total: g.totales.total, estado: 'pendiente' });
 });
 
 app.get('/api/comprobantes/:id', async (c) => {
@@ -186,6 +292,19 @@ app.get('/api/comprobantes/:id', async (c) => {
   )
     .bind(id)
     .all();
+  // Datos de referencia para notas de crédito y comprobantes anulados.
+  let referencia = null;
+  if (row.referencia_id) {
+    referencia = await c.env.DB.prepare('SELECT tipo, serie, correlativo FROM comprobantes WHERE id = ?')
+      .bind(row.referencia_id)
+      .first();
+  }
+  let anuladoPor = null;
+  if (row.anulado_por) {
+    anuladoPor = await c.env.DB.prepare('SELECT id, serie, correlativo, estado FROM comprobantes WHERE id = ?')
+      .bind(row.anulado_por)
+      .first();
+  }
   const e = empresa(c.env);
   const qr = textoQr({
     rucEmisor: e.ruc,
@@ -198,7 +317,7 @@ app.get('/api/comprobantes/:id', async (c) => {
     clienteTipoDoc: String(row.cliente_tipo_doc),
     clienteNumDoc: String(row.cliente_num_doc),
   });
-  return c.json({ ...row, items, qr, empresa: e });
+  return c.json({ ...row, items, qr, empresa: e, referencia, anuladoPor });
 });
 
 // Exportación CSV para la computadora (rango de fechas).
@@ -220,7 +339,7 @@ app.get('/api/export.csv', async (c) => {
   const cab = 'Tipo,Serie,Numero,Fecha,Hora,TipoDocCliente,DocCliente,Cliente,Moneda,Gravado,Exonerado,Inafecto,IGV,Total,Estado,CodigoCDR';
   const filas = results.map((r) =>
     [
-      r.tipo === '01' ? 'FACTURA' : 'BOLETA', r.serie, r.correlativo, r.fecha_emision, r.hora_emision,
+      r.tipo === '01' ? 'FACTURA' : r.tipo === '07' ? 'NOTA CREDITO' : 'BOLETA', r.serie, r.correlativo, r.fecha_emision, r.hora_emision,
       r.cliente_tipo_doc, r.cliente_num_doc, r.cliente_nombre, r.moneda,
       fmt(Number(r.total_gravado)), fmt(Number(r.total_exonerado)), fmt(Number(r.total_inafecto)),
       fmt(Number(r.total_igv)), fmt(Number(r.total)), r.estado, r.cdr_codigo,
@@ -291,12 +410,16 @@ async function generarYEnviarResumen(
   env: Env,
   fechaReferencia: string,
 ): Promise<{ error?: string; id?: number; rc?: string; ticket?: string; boletas?: number }> {
+  // Boletas y notas de crédito de boletas (serie B...) del día.
   const { results: boletas } = await env.DB.prepare(
-    `SELECT id, serie, correlativo, cliente_tipo_doc, cliente_num_doc, moneda,
-            total_gravado, total_exonerado, total_inafecto, total_igv, total
-     FROM comprobantes
-     WHERE tipo = '03' AND estado = 'pendiente' AND resumen_id IS NULL AND fecha_emision = ?
-     ORDER BY serie, correlativo`,
+    `SELECT c.id, c.tipo, c.serie, c.correlativo, c.cliente_tipo_doc, c.cliente_num_doc, c.moneda,
+            c.total_gravado, c.total_exonerado, c.total_inafecto, c.total_igv, c.total,
+            r.serie AS ref_serie, r.correlativo AS ref_correlativo
+     FROM comprobantes c
+     LEFT JOIN comprobantes r ON r.id = c.referencia_id
+     WHERE c.tipo IN ('03', '07') AND c.serie LIKE 'B%'
+       AND c.estado = 'pendiente' AND c.resumen_id IS NULL AND c.fecha_emision = ?
+     ORDER BY c.serie, c.correlativo`,
   )
     .bind(fechaReferencia)
     .all<Record<string, unknown>>();
@@ -312,7 +435,11 @@ async function generarYEnviarResumen(
 
   const emp = empresa(env);
   const lineas: BoletaResumen[] = boletas.map((b) => ({
-    tipo: '03',
+    tipo: b.tipo as '03' | '07',
+    docReferencia:
+      b.tipo === '07' && b.ref_serie
+        ? { tipo: '03', serie: String(b.ref_serie), correlativo: Number(b.ref_correlativo) }
+        : undefined,
     serie: String(b.serie),
     correlativo: Number(b.correlativo),
     clienteTipoDoc: String(b.cliente_tipo_doc),
@@ -424,10 +551,11 @@ const worker: ExportedHandler<Env> = {
       return;
     }
     // Cron horario: reintentos y consultas de ticket.
+    // En modo resumen, por sendBill solo van facturas y sus notas (serie F...).
     const { results: pendientes } = await env.DB.prepare(
       env.MODO_ENVIO_BOLETAS === 'individual'
         ? "SELECT id FROM comprobantes WHERE estado = 'pendiente' ORDER BY id LIMIT 50"
-        : "SELECT id FROM comprobantes WHERE estado = 'pendiente' AND tipo = '01' ORDER BY id LIMIT 50",
+        : "SELECT id FROM comprobantes WHERE estado = 'pendiente' AND serie LIKE 'F%' ORDER BY id LIMIT 50",
     ).all<{ id: number }>();
     for (const r of pendientes) ctx.waitUntil(enviarASunat(env, r.id));
 

@@ -10,9 +10,12 @@ import type { Empresa } from './types.js';
  */
 
 export interface BoletaResumen {
-  tipo: '03';
+  /** 03 = boleta, 07 = nota de crédito de boleta. */
+  tipo: '03' | '07';
   serie: string;
   correlativo: number;
+  /** Solo para tipo 07: comprobante que la nota modifica. */
+  docReferencia?: { tipo: '03'; serie: string; correlativo: number };
   clienteTipoDoc: string;
   clienteNumDoc: string;
   moneda: 'PEN' | 'USD';
@@ -68,6 +71,12 @@ function lineaResumen(i: number, b: BoletaResumen): string {
     `<cbc:CustomerAssignedAccountID>${b.clienteNumDoc === '-' ? '0' : b.clienteNumDoc}</cbc:CustomerAssignedAccountID>` +
     `<cbc:AdditionalAccountID>${b.clienteTipoDoc === '0' ? '1' : b.clienteTipoDoc}</cbc:AdditionalAccountID>` +
     `</cac:AccountingCustomerParty>` +
+    (b.docReferencia
+      ? `<cac:BillingReference><cac:InvoiceDocumentReference>` +
+        `<cbc:ID>${b.docReferencia.serie}-${b.docReferencia.correlativo}</cbc:ID>` +
+        `<cbc:DocumentTypeCode>${b.docReferencia.tipo}</cbc:DocumentTypeCode>` +
+        `</cac:InvoiceDocumentReference></cac:BillingReference>`
+      : '') +
     `<cac:Status><cbc:ConditionCode>${b.condicion}</cbc:ConditionCode></cac:Status>` +
     `<sac:TotalAmount currencyID="${m}">${fmt(b.total)}</sac:TotalAmount>` +
     pagos.join('') +
