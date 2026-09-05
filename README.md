@@ -97,11 +97,22 @@ SUNAT_BETA=1 npx vitest run test/sunat-beta.integration.test.ts  # contra SUNAT 
 
 ## Despliegue (resumen)
 
-1. `npx wrangler d1 create irasola-facturacion` y `npx wrangler r2 bucket create irasola-archivo`
-   (copiar el `database_id` a `wrangler.toml`).
+Ya desplegado en el plan gratuito de Cloudflare (modo prueba contra SUNAT
+beta): **https://irasola-facturacion.luisslagos08.workers.dev**
+
+Los archivos (XML/CDR) viven en la tabla `archivos` de D1 — no se usa R2,
+que exige registrar tarjeta. Para reproducir el despliegue:
+
+1. `npx wrangler d1 create irasola-facturacion` (copiar el `database_id` a `wrangler.toml`).
 2. `npx wrangler d1 migrations apply irasola-facturacion --remote`
-3. Secrets: `npx wrangler secret put CERT_PEM | CERT_KEY | SOL_USUARIO | SOL_CLAVE`
-4. `npx wrangler deploy`
+3. `npx wrangler deploy`
+4. Secrets: `npx wrangler secret put APP_CLAVE | SOL_USUARIO | SOL_CLAVE | CERT_PEM | CERT_KEY | GRE_CLIENT_ID | GRE_CLIENT_SECRET`
+
+Para pasar a producción real: cargar el Certificado Digital Tributario y la
+Clave SOL reales como secrets, poner `SUNAT_AMBIENTE = "produccion"`,
+`MODO_ENVIO_BOLETAS = "resumen"` y `GRE_AMBIENTE = "produccion"` en
+`wrangler.toml`, actualizar `EMPRESA_JSON` con los datos reales del RUC y
+volver a desplegar.
 
 > **Nunca** subir al repositorio la Clave SOL ni el certificado digital.
 > En producción se usa el Certificado Digital Tributario gratuito de SUNAT y

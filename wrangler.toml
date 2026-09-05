@@ -30,11 +30,10 @@ EMPRESA_JSON = '{"ruc":"20000000001","razonSocial":"EMPRESA DE PRUEBA S.A.C.","n
 [[d1_databases]]
 binding = "DB"
 database_name = "irasola-facturacion"
-database_id = "REEMPLAZAR-AL-CREAR"  # npx wrangler d1 create irasola-facturacion
+database_id = "f5bf9def-2b52-4537-abf9-42408709e7cd"
 
-[[r2_buckets]]
-binding = "ARCHIVO"
-bucket_name = "irasola-archivo"      # npx wrangler r2 bucket create irasola-archivo
+# Los archivos (XML firmados y CDR) se guardan en la tabla `archivos` de D1:
+# así no hace falta habilitar R2 (que pide tarjeta) y el costo sigue en cero.
 
 [triggers]
 # Cada hora: reintentos de envíos y consulta de tickets de resúmenes.

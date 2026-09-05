@@ -11,7 +11,7 @@ import { textoQr } from './sunat/qr.js';
 import { fmt } from './sunat/calculo.js';
 
 /**
- * API del sistema de facturación (Cloudflare Worker + D1 + R2).
+ * API del sistema de facturación (Cloudflare Worker + D1).
  *
  * La emisión nunca se bloquea por SUNAT: el comprobante se firma y archiva al
  * instante ('pendiente') y el envío corre en segundo plano con reintentos.
@@ -22,7 +22,6 @@ import { fmt } from './sunat/calculo.js';
 
 export interface Env {
   DB: D1Database;
-  ARCHIVO: R2Bucket;
   // Secrets (wrangler secret put ...):
   CERT_PEM: string;
   CERT_KEY: string;
@@ -61,6 +60,25 @@ function ahoraLima(): { fecha: string; hora: string } {
 
 function empresa(env: Env): Empresa {
   return JSON.parse(env.EMPRESA_JSON) as Empresa;
+}
+
+/**
+ * Almacén de archivos (XML firmados y CDR) sobre D1: pocos KB por archivo,
+ * sin necesidad de habilitar R2 (que exige tarjeta). Los ZIP van en base64.
+ */
+async function guardarArchivo(env: Env, clave: string, contenido: string): Promise<void> {
+  await env.DB.prepare(
+    'INSERT INTO archivos (clave, contenido) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET contenido = excluded.contenido',
+  )
+    .bind(clave, contenido)
+    .run();
+}
+
+async function leerArchivo(env: Env, clave: string): Promise<string | null> {
+  const fila = await env.DB.prepare('SELECT contenido FROM archivos WHERE clave = ?')
+    .bind(clave)
+    .first<{ contenido: string }>();
+  return fila?.contenido ?? null;
 }
 
 function claveValida(entregada: string | undefined, esperada: string): boolean {
@@ -141,7 +159,7 @@ app.post('/api/comprobantes', async (c) => {
   }
   const firmado = firmarXml(g.xml, { privateKeyPem: c.env.CERT_KEY, certPem: c.env.CERT_PEM });
   const xmlKey = `xml/${g.nombre}.xml`;
-  await c.env.ARCHIVO.put(xmlKey, firmado);
+  await guardarArchivo(c.env, xmlKey, firmado);
 
   const ins = await c.env.DB.prepare(
     `INSERT INTO comprobantes (tipo, serie, correlativo, fecha_emision, hora_emision, moneda,
@@ -256,7 +274,7 @@ app.post('/api/comprobantes/:id/nota-credito', async (c) => {
   }
   const firmado = firmarXml(g.xml, { privateKeyPem: c.env.CERT_KEY, certPem: c.env.CERT_PEM });
   const xmlKey = `xml/${g.nombre}.xml`;
-  await c.env.ARCHIVO.put(xmlKey, firmado);
+  await guardarArchivo(c.env, xmlKey, firmado);
 
   const ins = await c.env.DB.prepare(
     `INSERT INTO comprobantes (tipo, serie, correlativo, fecha_emision, hora_emision, moneda,
@@ -471,7 +489,7 @@ app.post('/api/guias', async (c) => {
   }
   const firmado = firmarXml(g.xml, { privateKeyPem: c.env.CERT_KEY, certPem: c.env.CERT_PEM }, 'sha256');
   const xmlKey = `gre/${g.nombre}.xml`;
-  await c.env.ARCHIVO.put(xmlKey, firmado);
+  await guardarArchivo(c.env, xmlKey, firmado);
 
   const ins = await c.env.DB.prepare(
     `INSERT INTO guias (serie, correlativo, fecha_emision, hora_emision, fecha_traslado,
@@ -525,13 +543,13 @@ async function enviarGuiaASunat(env: Env, guiaId: number): Promise<void> {
     .bind(guiaId)
     .first<{ serie: string; correlativo: number; xml_key: string }>();
   if (!g) return;
-  const obj = await env.ARCHIVO.get(g.xml_key);
-  if (!obj) return;
+  const xmlGuardado = await leerArchivo(env, g.xml_key);
+  if (!xmlGuardado) return;
   const endpoints = ENDPOINTS_GRE[env.GRE_AMBIENTE] ?? ENDPOINTS_GRE.produccion!;
   try {
     const token = await obtenerTokenGre(endpoints, credencialesGre(env));
     const nombre = `${empresa(env).ruc}-31-${g.serie}-${g.correlativo}`;
-    const ticket = await enviarGuia(endpoints, token, nombre, await obj.text());
+    const ticket = await enviarGuia(endpoints, token, nombre, xmlGuardado);
     await env.DB.prepare("UPDATE guias SET ticket = ?, estado = 'enviada' WHERE id = ?").bind(ticket, guiaId).run();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -554,7 +572,7 @@ async function consultarTicketGuia(env: Env, guiaId: number): Promise<void> {
     if (st.codigo === '0' && st.cdrZipBase64) {
       const nombre = `${empresa(env).ruc}-31-${g.serie}-${g.correlativo}`;
       const cdrKey = `cdr/R-${nombre}.zip`;
-      await env.ARCHIVO.put(cdrKey, Uint8Array.from(atob(st.cdrZipBase64), (ch) => ch.charCodeAt(0)));
+      await guardarArchivo(env, cdrKey, st.cdrZipBase64);
       await env.DB.prepare(
         "UPDATE guias SET estado = 'aceptada', cdr_codigo = '0', cdr_descripcion = 'Guía aceptada por SUNAT', cdr_key = ? WHERE id = ?",
       )
@@ -578,9 +596,8 @@ async function enviarASunat(env: Env, comprobanteId: number): Promise<void> {
     .first<{ tipo: string; serie: string; correlativo: number; xml_key: string; estado: string }>();
   if (!row || row.estado !== 'pendiente') return;
 
-  const obj = await env.ARCHIVO.get(row.xml_key);
-  if (!obj) return;
-  const xml = await obj.text();
+  const xml = await leerArchivo(env, row.xml_key);
+  if (!xml) return;
   const emp = empresa(env);
   const nombre = `${emp.ruc}-${row.tipo}-${row.serie}-${row.correlativo}`;
   const endpoint = ENDPOINTS[env.SUNAT_AMBIENTE];
@@ -589,7 +606,7 @@ async function enviarASunat(env: Env, comprobanteId: number): Promise<void> {
   try {
     const res = await sendBill(endpoint, cred, nombre, xml);
     const cdrKey = `cdr/R-${nombre}.zip`;
-    await env.ARCHIVO.put(cdrKey, Uint8Array.from(atob(res.cdrZipBase64), (ch) => ch.charCodeAt(0)));
+    await guardarArchivo(env, cdrKey, res.cdrZipBase64);
     await env.DB.prepare(
       `UPDATE comprobantes SET estado = ?, cdr_codigo = ?, cdr_descripcion = ?, cdr_key = ?,
          intentos_envio = intentos_envio + 1 WHERE id = ?`,
@@ -657,7 +674,7 @@ async function generarYEnviarResumen(
   const g = generarResumenXml({ emisor: emp, fechaReferencia, fechaGeneracion: hoy, numero, boletas: lineas });
   const firmado = firmarXml(g.xml, { privateKeyPem: env.CERT_KEY, certPem: env.CERT_PEM });
   const xmlKey = `resumen/${g.nombre}.xml`;
-  await env.ARCHIVO.put(xmlKey, firmado);
+  await guardarArchivo(env, xmlKey, firmado);
 
   const ins = await env.DB.prepare(
     `INSERT INTO resumenes (fecha_referencia, fecha_generacion, numero_dia, nombre, xml_key)
@@ -689,15 +706,15 @@ async function reintentarResumen(env: Env, resumenId: number): Promise<void> {
     .bind(resumenId, 'pendiente')
     .first<{ nombre: string; xml_key: string }>();
   if (!r) return;
-  const obj = await env.ARCHIVO.get(r.xml_key);
-  if (!obj) return;
+  const xmlGuardado = await leerArchivo(env, r.xml_key);
+  if (!xmlGuardado) return;
   const emp = empresa(env);
   try {
     const ticket = await sendSummary(
       ENDPOINTS[env.SUNAT_AMBIENTE],
       { ruc: emp.ruc, usuario: env.SOL_USUARIO, clave: env.SOL_CLAVE },
       r.nombre,
-      await obj.text(),
+      xmlGuardado,
     );
     await env.DB.prepare("UPDATE resumenes SET ticket = ?, estado = 'enviado' WHERE id = ?").bind(ticket, resumenId).run();
   } catch {
@@ -720,7 +737,7 @@ async function consultarTicketResumen(env: Env, resumenId: number): Promise<void
     if (st.codigo === '98') return; // aún en proceso
     if (st.cdr) {
       const cdrKey = `cdr/R-${r.nombre}.zip`;
-      await env.ARCHIVO.put(cdrKey, Uint8Array.from(atob(st.cdr.cdrZipBase64), (ch) => ch.charCodeAt(0)));
+      await guardarArchivo(env, cdrKey, st.cdr.cdrZipBase64);
       const estado = st.cdr.aceptado ? 'aceptado' : 'rechazado';
       await env.DB.prepare(
         'UPDATE resumenes SET estado = ?, cdr_codigo = ?, cdr_descripcion = ?, cdr_key = ? WHERE id = ?',
