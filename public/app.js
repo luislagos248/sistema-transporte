@@ -56,14 +56,10 @@ function guardarSugerencia(tipo, texto) {
   localStorage.setItem(`sug:${tipo}`, JSON.stringify(lista));
 }
 
-/* ---------- Config de tipos de operación ---------- */
+/* ---------- Configuración ---------- */
 
-const TIPOS = {
-  pasaje:     { titulo: 'Pasaje',        icono: '🚌', rubro: 'transporte', ejemplo: 'Pasaje Pucallpa - San Alejandro' },
-  encomienda: { titulo: 'Encomienda',    icono: '📦', rubro: 'transporte', ejemplo: 'Encomienda: caja mediana' },
-  hospedaje:  { titulo: 'Hospedaje',     icono: '🛏️', rubro: 'hospedaje',  ejemplo: 'Hospedaje 1 noche, hab. 4' },
-  otro:       { titulo: 'Otro servicio', icono: '🚐', rubro: 'transporte', ejemplo: 'Servicio de transporte contratado a Huánuco' },
-};
+/** Reconocimiento de voz del navegador (gratis; Chrome/Android y Safari). */
+const RecVoz = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 
 const SERIES = {
   transporte: { boleta: 'B001', factura: 'F001' },
@@ -94,7 +90,7 @@ function vistaLogin() {
     <div class="tarjeta" style="max-width:400px;margin:56px auto;text-align:center">
       <img src="/icon.svg" alt="" width="72" height="72" style="border-radius:20px;margin-bottom:8px">
       <h1 style="margin:4px 0 2px">Turismo Irazola</h1>
-      <p class="ayuda" style="margin-bottom:18px">Boletas, facturas y guías electrónicas</p>
+      <p class="ayuda" style="margin-bottom:18px">Boletas y facturas electrónicas</p>
       <div style="text-align:left">
       <label for="clave">Clave de acceso</label>
       <input id="clave" type="password" autocomplete="current-password" inputmode="numeric">
@@ -123,17 +119,9 @@ async function vistaHome() {
       <div class="monto" id="ventasHoy">S/ —</div>
       <div class="detalle" id="detalleHoy">Cargando…</div>
     </div>
-    <h2 style="margin-top:0">¿Qué desea emitir?</h2>
-    <div class="accesos">
-      ${Object.entries(TIPOS).map(([k, t]) => `
-        <a class="acceso" href="#emitir/${k}"><span class="icono">${t.icono}</span>${t.titulo}</a>
-      `).join('')}
-    </div>
-    <h2>Más opciones</h2>
-    <div class="accesos">
+    <a class="boton boton-grande" href="#emitir" style="display:block;margin-bottom:16px">🧾 EMITIR BOLETA O FACTURA</a>
+    <div class="accesos accesos-3">
       <a class="acceso" href="#importar"><span class="icono">📥</span>Importar mensaje</a>
-      <a class="acceso" href="#guia"><span class="icono">🚚</span>Guía de carga</a>
-      <a class="acceso" href="#guias"><span class="icono">🗒️</span>Guías emitidas</a>
       <a class="acceso" href="#lista"><span class="icono">📋</span>Comprobantes</a>
       <a class="acceso" href="#reportes"><span class="icono">📊</span>Reportes</a>
     </div>`;
@@ -465,162 +453,354 @@ async function vistaGuias() {
     </table>`}`;
 }
 
-function vistaEmitir(tipoOp) {
-  const cfg = TIPOS[tipoOp] || TIPOS.otro;
-  const items = [];
+/* ---------- Asistente de emisión: todo por toques ---------- */
+
+const SERVICIOS = {
+  pasaje: {
+    titulo: '🚌 Pasaje',
+    rubro: 'transporte',
+    etiquetaCant: 'Pasajes',
+    etiquetaPrecio: 'Precio por pasaje (S/)',
+    semillas: ['Pasaje Pucallpa - San Alejandro', 'Pasaje San Alejandro - Pucallpa', 'Pasaje Pucallpa - Km 86', 'Pasaje Km 86 - Pucallpa'],
+  },
+  encomienda: {
+    titulo: '📦 Encomienda',
+    rubro: 'transporte',
+    etiquetaCant: 'Bultos',
+    etiquetaPrecio: 'Precio por bulto (S/)',
+    semillas: ['Encomienda: caja', 'Encomienda: sobre', 'Encomienda: saco', 'Encomienda: paquete'],
+  },
+  hospedaje: {
+    titulo: '🛏️ Hospedaje',
+    rubro: 'hospedaje',
+    etiquetaCant: 'Días / noches',
+    etiquetaPrecio: 'Precio por día (S/)',
+    semillas: ['Alquiler de habitación', 'Hospedaje'],
+  },
+};
+
+async function vistaEmitir() {
+  const items = []; // { servicio, descripcion, cantidad, precioCentimos }
+  let tipoDoc = 'boleta';
+  let servicio = 'pasaje';
+  const sugerenciasApi = {}; // caché por servicio
 
   $app.innerHTML = `
-    <h1>${cfg.icono} ${cfg.titulo}</h1>
+    <h1>Emitir</h1>
     <div class="dos-columnas">
     <div>
     <div class="tarjeta">
-      <div class="conmutador" id="tipoDoc">
+      <div class="conmutador" id="emTipo">
         <button data-v="boleta" class="activa">BOLETA</button>
         <button data-v="factura">FACTURA</button>
       </div>
+      <h2>¿Para quién?</h2>
+      <div class="sugerencias" id="emFrecuentes"></div>
+      <div class="fila" style="margin-top:8px">
+        <input id="emDoc" inputmode="numeric" maxlength="11" placeholder="DNI o RUC">
+        <button class="boton-suave" id="emVarios" style="flex:0 0 auto">Al paso</button>
+      </div>
+      <input id="emNombre" placeholder="El nombre se busca solo" style="margin-top:8px">
+      <p class="ayuda" id="emBusqueda"></p>
+    </div>
 
-      <div id="datosCliente"></div>
-
-      <label for="desc">Descripción</label>
-      <input id="desc" placeholder="Ej: ${esc(cfg.ejemplo)}" autocomplete="off">
-      <div class="sugerencias" id="sug"></div>
-
-      <label for="monto">Monto (S/)</label>
-      <input id="monto" class="monto" inputmode="decimal" placeholder="0.00" autocomplete="off">
-
-      <label><input type="checkbox" id="conIgv" style="width:auto"> Operación con IGV (18%)</label>
-      <p class="ayuda">Dejar sin marcar para operaciones exoneradas (Amazonía). Consultar con el contador qué operaciones llevan IGV.</p>
-
-      <br>
-      <button class="boton-suave" id="agregar" style="width:100%">+ Agregar este ítem y seguir</button>
+    <div class="tarjeta">
+      <h2 style="margin-top:0">¿Qué le cobramos?</h2>
+      <div class="conmutador" id="emServicio">
+        <button data-v="pasaje" class="activa">🚌 Pasaje</button>
+        <button data-v="encomienda">📦 Encomienda</button>
+        <button data-v="hospedaje">🛏️ Hospedaje</button>
+      </div>
+      <div id="emZona"></div>
     </div>
     </div>
+
     <div>
     <div class="tarjeta">
       <h2 style="margin-top:0">Resumen</h2>
-      <div id="lineas"><p class="ayuda">Aún no hay ítems. Puede emitir directamente con la descripción y monto de la izquierda.</p></div>
-      <div class="total-grande" id="total"></div>
-      <p class="error" id="err" hidden></p>
-      <button class="boton-grande" id="emitir">EMITIR</button>
+      <div id="emLineas"><p class="ayuda">Elija el servicio, toque una opción y ponga el precio.</p></div>
+      <div class="total-grande" id="emTotal"></div>
+      <p class="error" id="emErr" hidden></p>
+      <button class="boton-grande" id="emEmitir">EMITIR</button>
     </div>
     </div>
     </div>`;
 
-  let tipoDoc = 'boleta';
-  const $err = document.getElementById('err');
+  const $ = (id) => document.getElementById(id);
 
-  const pintaCliente = () => {
-    const d = document.getElementById('datosCliente');
-    if (tipoDoc === 'factura') {
-      d.innerHTML = `
-        <label for="ruc">RUC del cliente</label>
-        <input id="ruc" inputmode="numeric" maxlength="11" placeholder="20XXXXXXXXX" autocomplete="off">
-        <label for="razon">Razón social</label>
-        <input id="razon" placeholder="EMPRESA S.A.C." autocomplete="off">`;
-    } else {
-      d.innerHTML = `
-        <label for="dni">DNI del cliente (opcional)</label>
-        <input id="dni" inputmode="numeric" maxlength="8" placeholder="Vacío = clientes varios" autocomplete="off">
-        <label for="nombre">Nombre (opcional)</label>
-        <input id="nombre" placeholder="Vacío = CLIENTES VARIOS" autocomplete="off">`;
-    }
-  };
-  pintaCliente();
-
-  document.querySelectorAll('#tipoDoc button').forEach((b) => {
+  // --- Tipo de comprobante ---
+  document.querySelectorAll('#emTipo button').forEach((b) => {
     b.onclick = () => {
       tipoDoc = b.dataset.v;
-      document.querySelectorAll('#tipoDoc button').forEach((x) => x.classList.toggle('activa', x === b));
-      pintaCliente();
+      document.querySelectorAll('#emTipo button').forEach((x) => x.classList.toggle('activa', x === b));
+      $('emVarios').style.display = tipoDoc === 'factura' ? 'none' : '';
     };
   });
 
-  const pintaSugerencias = () => {
-    document.getElementById('sug').innerHTML = sugerencias(tipoOp)
-      .map((s) => `<button type="button">${esc(s)}</button>`)
-      .join('');
-    document.querySelectorAll('#sug button').forEach((b) => {
-      b.onclick = () => { document.getElementById('desc').value = b.textContent; };
-    });
+  // --- Cliente: frecuentes con un toque + búsqueda automática ---
+  const elegirCliente = (numDoc, nombre) => {
+    $('emDoc').value = numDoc;
+    $('emNombre').value = nombre;
+    $('emBusqueda').textContent = '✔ Cliente elegido';
+    if (numDoc.length === 11) {
+      tipoDoc = 'factura';
+      document.querySelectorAll('#emTipo button').forEach((x) => x.classList.toggle('activa', x.dataset.v === 'factura'));
+    }
   };
-  pintaSugerencias();
+  api('/api/clientes-frecuentes').then((lista) => {
+    $('emFrecuentes').innerHTML = lista
+      .map((f) => `<button type="button" data-doc="${esc(f.numDoc)}" data-nom="${esc(f.nombre)}">👤 ${esc(f.nombre.split(' ').slice(0, 3).join(' '))}</button>`)
+      .join('');
+    document.querySelectorAll('#emFrecuentes button').forEach((b) => {
+      b.onclick = () => elegirCliente(b.dataset.doc, b.dataset.nom);
+    });
+  }).catch(() => {});
+  $('emDoc').addEventListener('change', async () => {
+    const doc = $('emDoc').value.trim();
+    if (!/^\d{8}$|^\d{11}$/.test(doc)) return;
+    $('emBusqueda').textContent = 'Buscando nombre…';
+    try {
+      const r = await api(`/api/consulta-doc?numero=${doc}`);
+      $('emNombre').value = r.nombre;
+      $('emBusqueda').textContent = `✔ Encontrado (${r.fuente === 'cache' ? 'cliente conocido' : 'consulta en línea'})`;
+      if (doc.length === 11) {
+        tipoDoc = 'factura';
+        document.querySelectorAll('#emTipo button').forEach((x) => x.classList.toggle('activa', x.dataset.v === 'factura'));
+      }
+    } catch {
+      $('emBusqueda').textContent = 'No se encontró: escriba el nombre.';
+    }
+  });
+  $('emVarios').onclick = () => {
+    $('emDoc').value = '';
+    $('emNombre').value = '';
+    $('emBusqueda').textContent = '✔ Se emitirá a CLIENTES VARIOS (sin documento)';
+  };
+
+  // --- Zona del servicio: chips + cantidad + precio (sin teclear letras) ---
+  const pintaZona = async () => {
+    const cfg = SERVICIOS[servicio];
+    const esHosp = servicio === 'hospedaje';
+    $('emZona').innerHTML = `
+      <div class="sugerencias" id="emChips" style="margin-top:12px"></div>
+      <label>Detalle</label>
+      <div class="fila">
+        <input id="emDesc" placeholder="Toque una opción o el micrófono">
+        ${RecVoz ? '<button type="button" class="boton-suave mic" id="emMic" title="Dictar por voz">🎤</button>' : ''}
+      </div>
+      <div id="emVoz" hidden style="background:var(--acento-tinte);border-radius:12px;padding:12px 14px;margin-top:8px">
+        <p style="margin:0 0 8px" id="emVozTexto"></p>
+        <div class="fila">
+          <button type="button" id="emVozOk">✔ Está bien</button>
+          <button type="button" class="boton-linea" id="emVozRepetir">🎤 Repetir</button>
+        </div>
+      </div>
+      ${esHosp ? `
+        <button class="boton-suave" id="emBtnFechas" style="margin-top:8px;padding:8px 14px;font-size:.85rem">📅 Agregar fechas (opcional)</button>
+        <div class="fila" id="emFechas" hidden style="margin-top:8px">
+          <div><label>Desde</label><input type="date" id="emDesde"></div>
+          <div><label>Hasta</label><input type="date" id="emHasta"></div>
+        </div>` : ''}
+      <div class="fila" style="margin-top:4px">
+        <div>
+          <label>${cfg.etiquetaCant}</label>
+          <div class="stepper">
+            <button type="button" id="emMenos">−</button>
+            <input id="emCant" inputmode="numeric" value="1">
+            <button type="button" id="emMas">+</button>
+          </div>
+        </div>
+        <div>
+          <label>${cfg.etiquetaPrecio}</label>
+          <input id="emPrecio" class="monto" inputmode="decimal" placeholder="0.00">
+        </div>
+      </div>
+      <p class="ayuda" id="emSubtotal"></p>
+      <button class="boton-suave" id="emAgregar" style="width:100%;margin-top:8px">➕ Agregar a la lista</button>`;
+
+    // Chips: historial propio + opciones fijas.
+    if (!sugerenciasApi[servicio]) {
+      try { sugerenciasApi[servicio] = (await api(`/api/sugerencias?tipo=${servicio}`)).map((x) => x.descripcion); }
+      catch { sugerenciasApi[servicio] = []; }
+    }
+    const chips = [...new Set([...sugerenciasApi[servicio], ...cfg.semillas])].slice(0, 6);
+    $('emChips').innerHTML = chips.map((t) => `<button type="button">${esc(t)}</button>`).join('');
+    document.querySelectorAll('#emChips button').forEach((b) => {
+      b.onclick = () => {
+        $('emDesc').value = b.textContent;
+        document.querySelectorAll('#emChips button').forEach((x) => x.classList.toggle('elegida', x === b));
+        $('emPrecio').focus();
+      };
+    });
+
+    const subtotal = () => {
+      const n = Math.max(1, parseInt($('emCant').value || '1', 10));
+      const p = montoACentimos($('emPrecio').value);
+      $('emSubtotal').textContent = p ? `Subtotal: ${n} × ${S(p)} = ${S(n * p)}` : '';
+    };
+    $('emMenos').onclick = () => { $('emCant').value = Math.max(1, parseInt($('emCant').value || '1', 10) - 1); subtotal(); };
+    $('emMas').onclick = () => { $('emCant').value = Math.min(200, parseInt($('emCant').value || '1', 10) + 1); subtotal(); };
+    $('emCant').addEventListener('input', subtotal);
+    $('emPrecio').addEventListener('input', subtotal);
+
+    // --- Dictado por voz: habla, confirma lo entendido, y se llena solo ---
+    if (RecVoz && $('emMic')) {
+      let ultimoTexto = '';
+      const escuchar = () => {
+        const rec = new RecVoz();
+        rec.lang = 'es-PE';
+        rec.interimResults = false;
+        rec.maxAlternatives = 1;
+        $('emMic').classList.add('grabando');
+        $('emMic').textContent = '🔴';
+        $('emVoz').hidden = true;
+        rec.onresult = (ev) => {
+          ultimoTexto = ev.results[0][0].transcript.trim();
+          $('emVozTexto').innerHTML = `Le entendí: <b>«${esc(ultimoTexto)}»</b>`;
+          $('emVoz').hidden = false;
+        };
+        rec.onerror = () => {
+          $('emVozTexto').innerHTML = 'No le escuché bien. Toque 🎤 Repetir y hable un poquito más despacio.';
+          $('emVoz').hidden = false;
+        };
+        rec.onend = () => {
+          $('emMic').classList.remove('grabando');
+          $('emMic').textContent = '🎤';
+        };
+        rec.start();
+      };
+      $('emMic').onclick = escuchar;
+      $('emVozRepetir').onclick = escuchar;
+      $('emVozOk').onclick = async () => {
+        $('emVoz').hidden = true;
+        if (!ultimoTexto) return;
+        try {
+          const a = await api('/api/analizar-mensaje', { method: 'POST', body: JSON.stringify({ texto: ultimoTexto }) });
+          $('emDesc').value = a.descripcion || ultimoTexto;
+          if (a.reparto) {
+            $('emCant').value = a.reparto.cantidad;
+            $('emPrecio').value = (a.reparto.precioUnitarioCentimos / 100).toFixed(2);
+          } else if (a.cantidad > 1) {
+            $('emCant').value = a.cantidad;
+          }
+          if (esHosp && a.fechas) {
+            $('emFechas').hidden = false;
+            $('emBtnFechas').hidden = true;
+            $('emDesde').value = a.fechas.desde;
+            $('emHasta').value = a.fechas.hasta;
+            $('emCant').value = a.fechas.dias;
+          }
+          $('emCant').dispatchEvent(new Event('input'));
+        } catch {
+          $('emDesc').value = ultimoTexto;
+        }
+      };
+    }
+
+    if (esHosp) {
+      $('emBtnFechas').onclick = () => { $('emFechas').hidden = false; $('emBtnFechas').hidden = true; };
+      const fechas = () => {
+        const d1 = $('emDesde').value, d2 = $('emHasta').value;
+        if (!d1 || !d2 || d2 <= d1) return;
+        const dias = Math.round((new Date(d2) - new Date(d1)) / 86400000);
+        $('emCant').value = dias;
+        const fmtF = (x) => { const [, m, d] = x.split('-'); return `${d}/${m}`; };
+        const base = ($('emDesc').value || 'Alquiler de habitación').replace(/ del \d{2}\/\d{2} al \d{2}\/\d{2}$/, '');
+        $('emDesc').value = `${base} del ${fmtF(d1)} al ${fmtF(d2)}`;
+        subtotal();
+      };
+      $('emDesde').addEventListener('change', fechas);
+      $('emHasta').addEventListener('change', fechas);
+    }
+
+    $('emAgregar').onclick = () => {
+      const it = tomarItem();
+      if (!it) return;
+      items.push(it);
+      $('emDesc').value = '';
+      $('emPrecio').value = '';
+      $('emCant').value = '1';
+      $('emSubtotal').textContent = '';
+      document.querySelectorAll('#emChips button').forEach((x) => x.classList.remove('elegida'));
+      pintaLineas();
+    };
+  };
+
+  const tomarItem = () => {
+    const $err = $('emErr');
+    $err.hidden = true;
+    const desc = $('emDesc').value.trim();
+    const precio = montoACentimos($('emPrecio').value);
+    const cant = Math.max(1, parseInt($('emCant').value || '1', 10));
+    if (!desc && precio === null) return null;
+    if (!desc) { $err.textContent = 'Toque una opción del detalle'; $err.hidden = false; return null; }
+    if (precio === null || precio <= 0) { $err.textContent = 'Ponga el precio'; $err.hidden = false; return null; }
+    return { servicio, descripcion: desc, cantidad: cant, precioCentimos: precio };
+  };
 
   const pintaLineas = () => {
-    const cont = document.getElementById('lineas');
-    if (items.length === 0) {
-      cont.innerHTML = '<p class="ayuda">Aún no hay ítems. Puede emitir directamente con la descripción y monto de la izquierda.</p>';
+    const cont = $('emLineas');
+    if (!items.length) {
+      cont.innerHTML = '<p class="ayuda">Elija el servicio, toque una opción y ponga el precio.</p>';
     } else {
-      cont.innerHTML = items
-        .map((it, i) => `
-          <div class="item-linea">
-            <div>${esc(it.descripcion)}</div>
-            <div><b>${S(it.montoCentimos)}</b> <button class="quitar" data-i="${i}" title="Quitar">✕</button></div>
-          </div>`)
-        .join('');
+      cont.innerHTML = items.map((it, i) => `
+        <div class="item-linea">
+          <div>${esc(it.descripcion)}${it.cantidad > 1 ? ` x${it.cantidad}` : ''}</div>
+          <div><b>${S(it.cantidad * it.precioCentimos)}</b> <button class="quitar" data-i="${i}">✕</button></div>
+        </div>`).join('');
       cont.querySelectorAll('.quitar').forEach((b) => {
         b.onclick = () => { items.splice(Number(b.dataset.i), 1); pintaLineas(); };
       });
     }
-    const suma = items.reduce((a, it) => a + it.montoCentimos, 0);
-    document.getElementById('total').textContent = suma ? `Total: ${S(suma)}` : '';
-  };
-  pintaLineas();
-
-  const tomarItemActual = () => {
-    const desc = document.getElementById('desc').value.trim();
-    const monto = montoACentimos(document.getElementById('monto').value);
-    if (!desc && monto === null) return null;
-    if (!desc) throw new Error('Escriba la descripción');
-    if (monto === null || monto <= 0) throw new Error('Escriba un monto válido, ej. 25.00');
-    return { descripcion: desc, montoCentimos: monto, afectacion: document.getElementById('conIgv').checked ? '10' : '20' };
+    const suma = items.reduce((a, it) => a + it.cantidad * it.precioCentimos, 0);
+    $('emTotal').textContent = suma ? `Total: ${S(suma)}` : '';
   };
 
-  document.getElementById('agregar').onclick = () => {
+  document.querySelectorAll('#emServicio button').forEach((b) => {
+    b.onclick = () => {
+      servicio = b.dataset.v;
+      document.querySelectorAll('#emServicio button').forEach((x) => x.classList.toggle('activa', x === b));
+      pintaZona();
+    };
+  });
+
+  $('emEmitir').onclick = async (ev) => {
+    const boton = ev.target;
+    const $err = $('emErr');
     $err.hidden = true;
     try {
-      const it = tomarItemActual();
-      if (!it) throw new Error('Escriba la descripción y el monto');
-      items.push(it);
-      guardarSugerencia(tipoOp, it.descripcion);
-      document.getElementById('desc').value = '';
-      document.getElementById('monto').value = '';
-      pintaSugerencias();
-      pintaLineas();
-    } catch (e) { $err.textContent = e.message; $err.hidden = false; }
-  };
+      const suelto = tomarItem();
+      const todos = suelto ? [...items, suelto] : [...items];
+      if (!todos.length) throw new Error('Agregue al menos un servicio');
+      const rubros = new Set(todos.map((it) => SERVICIOS[it.servicio].rubro));
+      if (rubros.size > 1) throw new Error('El hospedaje va en un comprobante aparte del transporte (series distintas)');
+      const rubro = [...rubros][0];
 
-  document.getElementById('emitir').onclick = async () => {
-    $err.hidden = true;
-    const boton = document.getElementById('emitir');
-    try {
-      const pendiente = tomarItemActual();
-      const todos = pendiente ? [...items, pendiente] : [...items];
-      if (todos.length === 0) throw new Error('Agregue al menos un ítem');
-
+      const doc = $('emDoc').value.trim();
+      const nombre = $('emNombre').value.trim();
       let cliente;
       if (tipoDoc === 'factura') {
-        const ruc = document.getElementById('ruc').value.trim();
-        const razon = document.getElementById('razon').value.trim();
-        if (!/^\d{11}$/.test(ruc)) throw new Error('La factura necesita el RUC del cliente (11 dígitos)');
-        if (!razon) throw new Error('Escriba la razón social del cliente');
-        cliente = { tipoDoc: '6', numDoc: ruc, nombre: razon };
+        if (!/^\d{11}$/.test(doc)) throw new Error('La factura necesita el RUC (11 dígitos)');
+        if (!nombre) throw new Error('Falta la razón social (se busca sola al poner el RUC)');
+        cliente = { tipoDoc: '6', numDoc: doc, nombre };
+      } else if (/^\d{8}$/.test(doc)) {
+        cliente = { tipoDoc: '1', numDoc: doc, nombre: nombre || `CLIENTE DNI ${doc}` };
+      } else if (doc) {
+        throw new Error('El documento debe ser DNI (8 dígitos) o RUC (11)');
       } else {
-        const dni = document.getElementById('dni').value.trim();
-        const nombre = document.getElementById('nombre').value.trim();
-        cliente = dni
-          ? { tipoDoc: '1', numDoc: dni, nombre: nombre || `CLIENTE DNI ${dni}` }
-          : { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
-        if (dni && !/^\d{8}$/.test(dni)) throw new Error('El DNI debe tener 8 dígitos');
+        cliente = { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
       }
 
       boton.disabled = true;
       boton.textContent = 'Emitiendo…';
-      const serie = SERIES[cfg.rubro][tipoDoc];
       const res = await api('/api/comprobantes', {
         method: 'POST',
-        body: JSON.stringify({ serie, cliente, items: todos }),
+        body: JSON.stringify({
+          serie: SERIES[rubro][tipoDoc],
+          cliente,
+          items: todos.map((it) => ({ descripcion: it.descripcion, montoCentimos: it.precioCentimos, cantidad: it.cantidad })),
+        }),
       });
-      if (pendiente) guardarSugerencia(tipoOp, pendiente.descripcion);
       location.hash = `#ticket/${res.id}`;
     } catch (e) {
       $err.textContent = e.message;
@@ -629,6 +809,8 @@ function vistaEmitir(tipoOp) {
       boton.textContent = 'EMITIR';
     }
   };
+
+  pintaZona();
 }
 
 /** Genera el comprobante como PDF (formato ticket de 80 mm) con su QR. */
@@ -976,7 +1158,7 @@ async function enrutar() {
   try {
     if (hash === '#login') vistaLogin();
     else if (hash === '#home') vistaHome();
-    else if (hash.startsWith('#emitir/')) vistaEmitir(hash.split('/')[1]);
+    else if (hash.startsWith('#emitir')) await vistaEmitir();
     else if (hash.startsWith('#ticket/')) await vistaTicket(hash.split('/')[1]);
     else if (hash === '#lista') await vistaLista();
     else if (hash === '#importar') await vistaImportar();

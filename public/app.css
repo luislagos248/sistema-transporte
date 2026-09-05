@@ -20,6 +20,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;
@@ -276,6 +277,45 @@ input.monto { font-size: 1.7rem; font-weight: 800; text-align: right; font-varia
   margin: 14px 0;
   font-variant-numeric: tabular-nums;
 }
+
+/* Contador con botones grandes (− n +) */
+.stepper {
+  display: flex;
+  align-items: center;
+  background: var(--campo);
+  border-radius: var(--radio-chico);
+  overflow: hidden;
+}
+.stepper button {
+  flex: 0 0 52px;
+  background: transparent;
+  color: var(--acento-osc);
+  font-size: 1.5rem;
+  font-weight: 800;
+  padding: 9px 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.stepper button:hover { box-shadow: none; background: var(--acento-tinte); }
+.stepper input {
+  text-align: center;
+  font-weight: 800;
+  font-size: 1.15rem;
+  background: transparent;
+  border: none;
+  padding: 10px 0;
+  font-variant-numeric: tabular-nums;
+}
+.stepper input:focus { box-shadow: none; background: transparent; border-color: transparent; }
+
+/* Chip elegido y micrófono */
+.sugerencias button.elegida { background: var(--acento); color: #fff; }
+.mic { flex: 0 0 56px; font-size: 1.25rem; padding: 10px 0; }
+.mic.grabando { animation: pulso 1s infinite; }
+@keyframes pulso { 50% { box-shadow: 0 0 0 6px rgba(217, 45, 32, 0.25); } }
+@media (prefers-reduced-motion: reduce) { .mic.grabando { animation: none; } }
+
+.accesos-3 { grid-template-columns: repeat(3, 1fr); }
 
 /* ---------- Estados ---------- */
 .estado {

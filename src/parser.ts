@@ -22,6 +22,41 @@ export interface MensajeAnalizado {
   faltantes: string[];
   /** Notas para mostrar (ej. se asumió que el monto es el total). */
   avisos: string[];
+  /** Rango de fechas dicho/escrito ("del 3 al 5 de agosto"), en YYYY-MM-DD. */
+  fechas?: { desde: string; hasta: string; dias: number };
+  /** true si el monto se dijo por unidad ("a 40 soles", "40 por día/cada uno"). */
+  montoPorUnidad?: boolean;
+}
+
+const MESES: Record<string, number> = {
+  enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7,
+  agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
+};
+
+/** "del 3 de agosto al 5 de agosto", "del 3 al 5 de agosto", "del 03/08 al 05/08". */
+function extraerFechas(texto: string): MensajeAnalizado['fechas'] {
+  const anio = new Date(Date.now() - 5 * 3600 * 1000).getFullYear();
+  const arma = (d1: number, m1: number, d2: number, m2: number) => {
+    const desde = new Date(Date.UTC(anio, m1 - 1, d1));
+    const hasta = new Date(Date.UTC(anio, m2 - 1, d2));
+    if (!(hasta > desde)) return undefined;
+    const dias = Math.round((hasta.getTime() - desde.getTime()) / 86400000);
+    const iso = (x: Date) => x.toISOString().slice(0, 10);
+    return { desde: iso(desde), hasta: iso(hasta), dias };
+  };
+  const nombreMes = texto.match(
+    /del?\s+(\d{1,2})(?:\s+de\s+([a-zñ]+))?\s+(?:al|hasta(?:\s+el)?)\s+(\d{1,2})\s+de\s+([a-zñ]+)/i,
+  );
+  if (nombreMes) {
+    const m2 = MESES[nombreMes[4]!.toLowerCase()];
+    const m1 = nombreMes[2] ? MESES[nombreMes[2].toLowerCase()] : m2;
+    if (m1 && m2) return arma(parseInt(nombreMes[1]!, 10), m1, parseInt(nombreMes[3]!, 10), m2);
+  }
+  const numerico = texto.match(/del?\s+(\d{1,2})\/(\d{1,2})\s+(?:al|hasta(?:\s+el)?)\s+(\d{1,2})\/(\d{1,2})/i);
+  if (numerico) {
+    return arma(parseInt(numerico[1]!, 10), parseInt(numerico[2]!, 10), parseInt(numerico[3]!, 10), parseInt(numerico[4]!, 10));
+  }
+  return undefined;
 }
 
 const PALABRAS_CANTIDAD =
@@ -42,6 +77,17 @@ function aCentimos(num: string): number {
 export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
   const out: MensajeAnalizado = { cantidad: 1, faltantes: [], avisos: [] };
   let texto = ` ${textoCrudo.replace(/\r/g, '')} `;
+
+  // 0) Fechas habladas/escritas ("del 3 al 5 de agosto"): sirven de cantidad
+  //    de días en hospedaje y no deben confundirse con montos o cantidades.
+  out.fechas = extraerFechas(texto);
+  if (out.fechas) {
+    texto = texto.replace(
+      /del?\s+\d{1,2}(?:\s+de\s+[a-zñ]+|\/\d{1,2})?\s+(?:al|hasta(?:\s+el)?)\s+\d{1,2}(?:\s+de\s+[a-zñ]+|\/\d{1,2})/gi,
+      ` FECHASRANGO `,
+    );
+    if (out.fechas.dias > 0) out.cantidad = out.fechas.dias;
+  }
 
   // 1) Documento: RUC (11 dígitos, empieza en 10/15/17/20) o DNI (8 dígitos).
   const ruc = texto.match(/\b(?:10|15|17|20)\d{9}\b/);
@@ -64,11 +110,13 @@ export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
   // Quitar etiquetas del documento para que no ensucien la descripción.
   texto = texto.replace(/\b(ruc|dni|doc(?:umento)?|n[uú]mero)\b\s*[:.]?/gi, ' ');
 
-  // 2) Cantidad ("2 pasajes", "x2").
-  const cant = texto.match(PALABRAS_CANTIDAD) ?? texto.match(/\bx\s?(\d{1,3})\b/i);
-  if (cant) {
-    const n = parseInt(cant[1]!, 10);
-    if (n >= 1 && n <= 200) out.cantidad = n;
+  // 2) Cantidad ("2 pasajes", "x2"); las fechas ya fijaron los días si las hubo.
+  if (!out.fechas) {
+    const cant = texto.match(PALABRAS_CANTIDAD) ?? texto.match(/\bx\s?(\d{1,3})\b/i);
+    if (cant) {
+      const n = parseInt(cant[1]!, 10);
+      if (n >= 1 && n <= 200) out.cantidad = n;
+    }
   }
 
   // 3) Monto: con S/ o "soles", o con decimales; si hay varios, el último.
@@ -87,8 +135,20 @@ export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
   const elegido = montos.filter((m) => m.fuerte).pop() ?? montos.pop();
   if (elegido) {
     out.montoTotalCentimos = elegido.valor;
+    // "a 40 soles", "40 por día", "40 cada uno": el monto es por unidad.
+    const idx = texto.indexOf(elegido.texto);
+    const antes = texto.slice(Math.max(0, idx - 12), idx);
+    const despues = texto.slice(idx + elegido.texto.length, idx + elegido.texto.length + 22);
+    out.montoPorUnidad =
+      out.cantidad > 1 &&
+      (/\ba\s*$/i.test(antes) || /^\s*(por|cada)\b/i.test(despues) || /\b(por\s+(d[ií]a|noche|pasaje|persona|unidad)|cada\s+un[oa])\b/i.test(despues));
     texto = texto.replace(elegido.texto, ' ');
-    if (out.cantidad > 1) out.avisos.push(`Se asumió que S/ ${(elegido.valor / 100).toFixed(2)} es el TOTAL por las ${out.cantidad} unidades.`);
+    if (out.montoPorUnidad) {
+      out.montoTotalCentimos = elegido.valor * out.cantidad;
+      out.avisos.push(`S/ ${(elegido.valor / 100).toFixed(2)} por unidad × ${out.cantidad} = S/ ${((elegido.valor * out.cantidad) / 100).toFixed(2)} en total.`);
+    } else if (out.cantidad > 1) {
+      out.avisos.push(`Se asumió que S/ ${(elegido.valor / 100).toFixed(2)} es el TOTAL por las ${out.cantidad} unidades.`);
+    }
   } else {
     out.faltantes.push('monto');
   }
@@ -118,6 +178,11 @@ export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
       .replace(/(?<![\d.,])\d{4,}(?![\d.,])/g, ' ') // números largos sueltos (teléfonos)
       .replace(/[|•*_~]/g, ' '),
   );
+  if (out.fechas) {
+    const f = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}`;
+    desc = limpiar(desc.replace(/FECHASRANGO/g, `del ${f(out.fechas.desde)} al ${f(out.fechas.hasta)}`));
+  }
+  desc = desc.replace(/\s+(a|de|por|con|y|en)$/i, '').trim();
   if (desc.length >= 3) {
     out.descripcion = desc.charAt(0).toUpperCase() + desc.slice(1);
   } else {

@@ -64,6 +64,32 @@ describe('analizador de mensajes de WhatsApp', () => {
     expect(repartirMonto(a)).toEqual({ cantidad: 2, precioUnitarioCentimos: 4000 });
   });
 
+  it('fechas habladas: "del 3 de agosto al 5 de agosto" fija los días', () => {
+    const a = analizarMensaje('alquiler de cuarto del 3 de agosto al 5 de agosto a 40 soles');
+    expect(a.fechas).toBeTruthy();
+    expect(a.fechas!.desde.endsWith('-08-03')).toBe(true);
+    expect(a.fechas!.hasta.endsWith('-08-05')).toBe(true);
+    expect(a.cantidad).toBe(2); // 2 noches
+    // "a 40 soles" = por día -> total 80
+    expect(a.montoPorUnidad).toBe(true);
+    expect(a.montoTotalCentimos).toBe(8000);
+    expect(repartirMonto(a)).toEqual({ cantidad: 2, precioUnitarioCentimos: 4000 });
+    expect(a.descripcion).toMatch(/alquiler de cuarto del 03\/08 al 05\/08$/i);
+  });
+
+  it('"por día" también marca el monto como unitario', () => {
+    const a = analizarMensaje('hospedaje 3 noches 40 soles por dia');
+    expect(a.cantidad).toBe(3);
+    expect(a.montoPorUnidad).toBe(true);
+    expect(a.montoTotalCentimos).toBe(12000);
+  });
+
+  it('fechas abreviadas: "del 3 al 5 de agosto"', () => {
+    const a = analizarMensaje('hospedaje del 3 al 5 de agosto');
+    expect(a.fechas?.dias).toBe(2);
+    expect(a.descripcion).toMatch(/hospedaje del 03\/08 al 05\/08/i);
+  });
+
   it('mensajes separados unidos: documento en uno, detalle en otro', () => {
     const a = analizarMensaje('ruc 20123456789\n\nhospedaje 2 noches habitacion doble 160.00');
     expect(a.numDoc).toBe('20123456789');

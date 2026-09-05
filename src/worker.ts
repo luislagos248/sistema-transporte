@@ -197,6 +197,40 @@ app.get('/api/series', async (c) => {
   return c.json(results);
 });
 
+/** Clientes frecuentes (de los comprobantes ya emitidos), para elegir con un toque. */
+app.get('/api/clientes-frecuentes', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT cliente_tipo_doc AS tipoDoc, cliente_num_doc AS numDoc, cliente_nombre AS nombre,
+            COUNT(*) AS veces
+     FROM comprobantes
+     WHERE cliente_num_doc != '-' AND tipo != '07'
+     GROUP BY cliente_num_doc
+     ORDER BY veces DESC, MAX(id) DESC
+     LIMIT 8`,
+  ).all();
+  return c.json(results);
+});
+
+/** Descripciones más usadas por servicio, para armarlas con un toque. */
+app.get('/api/sugerencias', async (c) => {
+  const tipo = c.req.query('tipo');
+  const filtros: Record<string, string> = {
+    pasaje: "lower(descripcion) LIKE 'pasaje%'",
+    encomienda: "lower(descripcion) LIKE 'encomienda%'",
+    hospedaje: "(lower(descripcion) LIKE '%hospedaje%' OR lower(descripcion) LIKE '%alquiler%' OR lower(descripcion) LIKE '%habitaci%')",
+  };
+  const filtro = filtros[tipo ?? ''] ?? '1=1';
+  const { results } = await c.env.DB.prepare(
+    `SELECT descripcion, COUNT(*) AS veces
+     FROM comprobante_items
+     WHERE ${filtro}
+     GROUP BY lower(descripcion)
+     ORDER BY veces DESC, MAX(id) DESC
+     LIMIT 6`,
+  ).all();
+  return c.json(results);
+});
+
 /** Analiza un mensaje de WhatsApp/nota y devuelve los datos detectados. */
 app.post('/api/analizar-mensaje', async (c) => {
   const { texto } = await c.req.json<{ texto?: string }>().catch(() => ({}) as { texto?: string });
