@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.wrangler/
+.env
+*.pem
+*.pfx
+*.p12
+test/fixtures/generated/

@@ -1,0 +1,28 @@
+# Configuración Cloudflare Workers (plan gratuito).
+# Despliegue: npx wrangler deploy   (requiere: wrangler d1 create / r2 bucket create
+# y los secrets: CERT_PEM, CERT_KEY, SOL_USUARIO, SOL_CLAVE)
+
+name = "irasola-facturacion"
+main = "src/worker.ts"
+compatibility_date = "2026-08-01"
+# xml-crypto usa node:crypto; nodejs_compat lo habilita en Workers.
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+SUNAT_AMBIENTE = "beta"
+# Datos del emisor. En producción se reemplaza por los datos reales del RUC.
+EMPRESA_JSON = '{"ruc":"20000000001","razonSocial":"EMPRESA DE PRUEBA S.A.C.","nombreComercial":"Tourismo Irasola","ubigeo":"250101","departamento":"UCAYALI","provincia":"CORONEL PORTILLO","distrito":"CALLERIA","direccion":"JR. DE PRUEBA NRO. 123"}'
+
+[[d1_databases]]
+binding = "DB"
+database_name = "irasola-facturacion"
+database_id = "REEMPLAZAR-AL-CREAR"  # npx wrangler d1 create irasola-facturacion
+
+[[r2_buckets]]
+binding = "ARCHIVO"
+bucket_name = "irasola-archivo"      # npx wrangler r2 bucket create irasola-archivo
+
+[triggers]
+# Reintentos de envíos pendientes cada hora (el resumen diario nocturno se
+# agregará en la fase correspondiente).
+crons = ["0 * * * *"]
