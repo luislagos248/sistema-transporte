@@ -4,10 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Turismo Irazola — Facturación</title>
-  <meta name="theme-color" content="#0d5c46">
+  <meta name="theme-color" content="#006c48">
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700;800&display=swap">
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -22,6 +24,11 @@
     </div>
   </header>
   <main id="app" class="cargando">Cargando…</main>
+  <nav id="navInferior" hidden>
+    <a href="#home"><span class="nav-ico">🏠</span>Inicio</a>
+    <a href="#lista"><span class="nav-ico">📋</span>Comprobantes</a>
+    <a href="#reportes"><span class="nav-ico">📊</span>Reportes</a>
+  </nav>
   <script src="/vendor/qrcode.js"></script>
   <script type="module" src="/app.js"></script>
 </body>

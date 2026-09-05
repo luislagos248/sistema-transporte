@@ -2,6 +2,7 @@
 
 const $app = document.getElementById('app');
 const $cabecera = document.getElementById('cabecera');
+const $navInferior = document.getElementById('navInferior');
 
 /* ---------- Utilidades ---------- */
 
@@ -88,13 +89,17 @@ const NOMBRE_TIPO = { '01': 'Factura', '03': 'Boleta', '07': 'Nota de crédito' 
 
 function vistaLogin() {
   $cabecera.hidden = true;
+  $navInferior.hidden = true;
   $app.innerHTML = `
-    <div class="tarjeta" style="max-width:420px;margin:40px auto">
-      <h1>🚌 Turismo Irazola</h1>
-      <p>Sistema de facturación</p>
+    <div class="tarjeta" style="max-width:400px;margin:56px auto;text-align:center">
+      <img src="/icon.svg" alt="" width="72" height="72" style="border-radius:20px;margin-bottom:8px">
+      <h1 style="margin:4px 0 2px">Turismo Irazola</h1>
+      <p class="ayuda" style="margin-bottom:18px">Boletas, facturas y guías electrónicas</p>
+      <div style="text-align:left">
       <label for="clave">Clave de acceso</label>
       <input id="clave" type="password" autocomplete="current-password" inputmode="numeric">
       <p class="error" id="err" hidden>Clave incorrecta, intente de nuevo.</p>
+      </div>
       <br>
       <button class="boton-grande" id="entrar">Entrar</button>
     </div>`;
@@ -111,21 +116,42 @@ function vistaLogin() {
   document.getElementById('clave').onkeydown = (e) => { if (e.key === 'Enter') entrar(); };
 }
 
-function vistaHome() {
+async function vistaHome() {
   $app.innerHTML = `
-    <h1>¿Qué desea emitir?</h1>
+    <div class="resumen-dia">
+      <div class="etiqueta">Ventas de hoy</div>
+      <div class="monto" id="ventasHoy">S/ —</div>
+      <div class="detalle" id="detalleHoy">Cargando…</div>
+    </div>
+    <h2 style="margin-top:0">¿Qué desea emitir?</h2>
     <div class="accesos">
       ${Object.entries(TIPOS).map(([k, t]) => `
         <a class="acceso" href="#emitir/${k}"><span class="icono">${t.icono}</span>${t.titulo}</a>
       `).join('')}
     </div>
-    <h2>Accesos</h2>
+    <h2>Más opciones</h2>
     <div class="accesos">
       <a class="acceso" href="#guia"><span class="icono">🚚</span>Guía de carga</a>
       <a class="acceso" href="#guias"><span class="icono">🗒️</span>Guías emitidas</a>
       <a class="acceso" href="#lista"><span class="icono">📋</span>Comprobantes</a>
       <a class="acceso" href="#reportes"><span class="icono">📊</span>Reportes</a>
     </div>`;
+
+  // Resumen del día, como el saldo de un banco.
+  try {
+    const hoy = hoyLima();
+    const filas = await api(`/api/comprobantes?desde=${hoy}&hasta=${hoy}`);
+    const emitidos = filas.filter((f) => f.tipo !== '07' && !f.anulado_por);
+    const total = emitidos.reduce((a, f) => a + Number(f.total), 0);
+    const pendientes = filas.filter((f) => f.estado === 'pendiente').length;
+    document.getElementById('ventasHoy').textContent = S(total);
+    document.getElementById('detalleHoy').textContent =
+      `${emitidos.length} comprobante${emitidos.length === 1 ? '' : 's'}` +
+      (pendientes ? ` · ${pendientes} en envío a SUNAT` : ' · todo enviado a SUNAT');
+  } catch {
+    document.getElementById('ventasHoy').textContent = 'S/ 0.00';
+    document.getElementById('detalleHoy').textContent = 'Sin ventas registradas hoy';
+  }
 }
 
 /* ---------- Guía de Remisión Transportista ---------- */
@@ -665,7 +691,8 @@ async function enrutar() {
   if (!clave() && hash !== '#login') { location.hash = '#login'; return; }
 
   $cabecera.hidden = hash === '#login';
-  document.querySelectorAll('#cabecera nav a').forEach((a) => {
+  $navInferior.hidden = hash === '#login';
+  document.querySelectorAll('#cabecera nav a, #navInferior a').forEach((a) => {
     a.classList.toggle('activa', hash.startsWith(a.getAttribute('href')));
   });
   $app.classList.remove('cargando');

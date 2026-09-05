@@ -1,7 +1,7 @@
 /* Service worker: cachea el "cascarón" de la app para abrir rápido.
    La API nunca se cachea (los datos siempre son en vivo). */
 
-const CACHE = 'irazola-v1';
+const CACHE = 'irazola-v2';
 const SHELL = ['/', '/index.html', '/app.css', '/app.js', '/vendor/qrcode.js', '/icon.svg', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
