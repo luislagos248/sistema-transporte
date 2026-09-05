@@ -59,6 +59,20 @@
   gap: 12px;
   padding: 6px 0;
 }
+.cliente-hallado {
+  margin-top: 6px;
+  background: var(--acento-tinte);
+  color: var(--acento-osc);
+  border-radius: var(--radio-chico);
+  padding: 12px 14px;
+  font-size: 1.02rem;
+}
+.cliente-hallado span {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--gris);
+  margin-top: 2px;
+}
 
 html, body {
   margin: 0;

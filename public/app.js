@@ -94,7 +94,7 @@ function vistaLogin() {
       <div style="text-align:left">
       <label for="clave">Clave de acceso</label>
       <input id="clave" type="password" autocomplete="current-password" inputmode="numeric">
-      <p class="error" id="err" hidden>Clave incorrecta, intente de nuevo.</p>
+      <p class="error" id="err" hidden></p>
       </div>
       <br>
       <button class="boton-grande" id="entrar">Entrar</button>
@@ -104,8 +104,10 @@ function vistaLogin() {
     try {
       await api('/api/yo');
       location.hash = '#home';
-    } catch {
-      document.getElementById('err').hidden = false;
+    } catch (e) {
+      const $err = document.getElementById('err');
+      $err.textContent = e.message === 'Clave incorrecta' ? 'Clave incorrecta, intente de nuevo.' : e.message;
+      $err.hidden = false;
     }
   };
   document.getElementById('entrar').onclick = entrar;
@@ -145,7 +147,13 @@ async function vistaHome() {
 
 /* ---------- Importar mensaje de WhatsApp / escanear papel ---------- */
 
-async function vistaImportar() {
+async function vistaImportar(sub) {
+  if (sub) {
+    if (flujoActivo && flujoActivo.base === '#importar' && flujoActivo.pasos[sub]) { flujoActivo.pasos[sub](); return; }
+    location.replace('#importar'); // recarga o enlace suelto: a la pantalla de pegado
+    return;
+  }
+  flujoActivo = null;
   // 'importar:texto' llega del botón Compartir de WhatsApp y se analiza solo;
   // 'importar:borrador' solo rellena el recuadro (al volver atrás o tras un error).
   const compartido = sessionStorage.getItem('importar:texto') || '';
@@ -209,13 +217,16 @@ async function vistaImportar() {
         faltantes: it.faltantes || [],
       })),
     };
-    const p1 = () => pasoCliente(estado, {
-      alAtras: () => { sessionStorage.setItem('importar:borrador', texto); vistaImportar(); },
-      alContinuar: () => p2(),
-    });
-    const p2 = () => pasoDetalleImportar(estado, { alAtras: p1, alContinuar: () => p3() });
-    const p3 = () => pasoResumen(estado, { alAtras: p2 });
-    p1();
+    sessionStorage.setItem('importar:borrador', texto); // si vuelve atrás, el texto sigue
+    flujoActivo = {
+      base: '#importar',
+      pasos: {
+        '1': () => pasoCliente(estado, { alAtras: () => history.back(), alContinuar: () => { location.hash = '#importar/2'; } }),
+        '2': () => pasoDetalleImportar(estado, { alAtras: () => history.back(), alContinuar: () => { location.hash = '#importar/3'; } }),
+        '3': () => pasoResumen(estado, { alAtras: () => history.back() }),
+      },
+    };
+    location.hash = '#importar/1';
   };
 
   document.getElementById('analizar').onclick = () => {
@@ -255,6 +266,11 @@ async function vistaImportar() {
    Paso 3: resumen grande y EMITIR.
    Cada paso REEMPLAZA la pantalla (nunca se agrega contenido abajo). */
 
+/* El asistente en curso. Cada paso vive en el hash (#emitir/1, #importar/2…):
+   así el botón atrás del teléfono baja de paso en paso, y desde el paso 1
+   vuelve a donde se empezó (menú o pantalla de pegado). */
+let flujoActivo = null; // { base: '#emitir' | '#importar', pasos: { '1', '2', '3' } }
+
 function pasoCabecera(n, titulo, idAtras) {
   return `
     <div class="paso-cab">
@@ -279,7 +295,7 @@ function clienteDeEstado(estado) {
   return { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
 }
 
-/** Paso 1 de 3: tipo de comprobante y cliente. */
+/** Paso 1 de 3: tipo de comprobante y cliente (el nombre se busca solo). */
 function pasoCliente(estado, nav) {
   window.scrollTo(0, 0);
   $app.innerHTML = `
@@ -290,14 +306,15 @@ function pasoCliente(estado, nav) {
         <button data-v="factura" class="${estado.tipo === 'factura' ? 'activa' : ''}">FACTURA</button>
       </div>
       <h2>¿Para quién?</h2>
-      ${estado.faltaDoc ? '<p class="error">En el mensaje no venía el DNI/RUC: pídalo al cliente o toque «Al paso».</p>' : ''}
-      <div class="sugerencias" id="p1Frecuentes"></div>
-      <div class="fila" style="margin-top:8px">
-        <input id="p1Doc" inputmode="numeric" maxlength="11" placeholder="DNI o RUC" value="${esc(estado.doc || '')}" ${estado.faltaDoc ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : ''}>
-        <button class="boton-suave" id="p1Varios" style="flex:0 0 auto">Al paso</button>
+      ${estado.faltaDoc ? '<p class="error">En el mensaje no venía el DNI/RUC: pídalo al cliente, o deje vacío si es venta al paso.</p>' : ''}
+      <label for="p1Doc">DNI o RUC del cliente</label>
+      <input id="p1Doc" inputmode="numeric" maxlength="11" placeholder="Escriba los 8 u 11 números" value="${esc(estado.doc || '')}" ${estado.faltaDoc ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : ''}>
+      <p class="ayuda" id="p1Pista"></p>
+      <div id="p1Resultado"></div>
+      <div id="p1Manual" hidden>
+        <label for="p1Nombre">Nombre / Razón social</label>
+        <input id="p1Nombre" value="${esc(estado.nombre || '')}" placeholder="Escríbalo tal como debe salir">
       </div>
-      <input id="p1Nombre" placeholder="El nombre se busca solo" style="margin-top:8px" value="${esc(estado.nombre || '')}">
-      <p class="ayuda" id="p1Busqueda"></p>
       <p class="error" id="p1Err" hidden></p>
       <br>
       <button class="boton-grande" id="p1Seguir">CONTINUAR →</button>
@@ -306,60 +323,68 @@ function pasoCliente(estado, nav) {
   const $ = (id) => document.getElementById(id);
   $('p1Atras').onclick = nav.alAtras;
 
+  let nombreAuto = ''; // lo halló la consulta: no se escribe encima
+  let ultimaConsulta = '';
+
+  const pintaPista = () => {
+    $('p1Pista').textContent = estado.tipo === 'factura'
+      ? 'La razón social se busca sola al terminar de escribir el RUC.'
+      : 'El nombre se busca solo. ¿Venta al paso? Deje el documento vacío y continúe.';
+  };
   const marcarFactura = () => {
     estado.tipo = 'factura';
     document.querySelectorAll('#p1Tipo button').forEach((x) => x.classList.toggle('activa', x.dataset.v === 'factura'));
-    $('p1Varios').style.display = 'none';
+    pintaPista();
   };
   document.querySelectorAll('#p1Tipo button').forEach((b) => {
     b.onclick = () => {
       estado.tipo = b.dataset.v;
       document.querySelectorAll('#p1Tipo button').forEach((x) => x.classList.toggle('activa', x === b));
-      $('p1Varios').style.display = estado.tipo === 'factura' ? 'none' : '';
+      pintaPista();
     };
   });
-  if (estado.tipo === 'factura') $('p1Varios').style.display = 'none';
+  pintaPista();
 
-  const elegirCliente = (numDoc, nombre) => {
-    $('p1Doc').value = numDoc;
-    $('p1Nombre').value = nombre;
-    $('p1Busqueda').textContent = '✔ Cliente elegido';
-    if (numDoc.length === 11) marcarFactura();
-  };
-  api('/api/clientes-frecuentes').then((lista) => {
-    $('p1Frecuentes').innerHTML = lista
-      .map((f) => `<button type="button" data-doc="${esc(f.numDoc)}" data-nom="${esc(f.nombre)}">👤 ${esc(f.nombre.split(' ').slice(0, 3).join(' '))}</button>`)
-      .join('');
-    document.querySelectorAll('#p1Frecuentes button').forEach((b) => {
-      b.onclick = () => elegirCliente(b.dataset.doc, b.dataset.nom);
-    });
-  }).catch(() => {});
-
-  const buscarNombre = async () => {
-    const doc = $('p1Doc').value.trim();
-    if (!/^\d{8}$|^\d{11}$/.test(doc)) return;
-    $('p1Busqueda').textContent = 'Buscando nombre…';
+  const buscar = async (doc) => {
+    if (doc === ultimaConsulta) return;
+    ultimaConsulta = doc;
+    $('p1Manual').hidden = true;
+    $('p1Resultado').innerHTML = '<p class="ayuda">Buscando el nombre…</p>';
     try {
       const r = await api(`/api/consulta-doc?numero=${doc}`);
-      $('p1Nombre').value = r.nombre;
-      $('p1Busqueda').textContent = `✔ Encontrado (${r.fuente === 'cache' ? 'cliente conocido' : 'consulta en línea'})`;
+      if ($('p1Doc')?.value !== doc) return; // ya cambió el número o se salió
+      nombreAuto = r.nombre;
+      $('p1Resultado').innerHTML = `
+        <div class="cliente-hallado">✔ <b>${esc(r.nombre)}</b>
+        <span>${r.fuente === 'cache' ? 'Cliente conocido' : 'Consulta en línea'}</span></div>`;
       if (doc.length === 11) marcarFactura();
     } catch {
-      $('p1Busqueda').textContent = 'No se encontró: escriba el nombre.';
+      if ($('p1Doc')?.value !== doc) return;
+      nombreAuto = '';
+      $('p1Resultado').innerHTML = '<p class="ayuda">No se encontró el nombre: escríbalo usted.</p>';
+      $('p1Manual').hidden = false;
+      $('p1Nombre').focus();
     }
   };
-  $('p1Doc').addEventListener('change', buscarNombre);
-  if (estado.doc && !estado.nombre) buscarNombre();
 
-  $('p1Varios').onclick = () => {
-    $('p1Doc').value = '';
-    $('p1Nombre').value = '';
-    $('p1Busqueda').textContent = '✔ Se emitirá a CLIENTES VARIOS (sin documento)';
-  };
+  // Busca solo, apenas el número llega a 8 (DNI) u 11 (RUC) dígitos.
+  $('p1Doc').addEventListener('input', () => {
+    const doc = $('p1Doc').value.replace(/\D/g, '');
+    if ($('p1Doc').value !== doc) $('p1Doc').value = doc;
+    if (doc.length === 8 || doc.length === 11) {
+      buscar(doc);
+    } else {
+      nombreAuto = '';
+      ultimaConsulta = '';
+      $('p1Resultado').innerHTML = '';
+      $('p1Manual').hidden = true;
+    }
+  });
+  if (/^\d{8}$|^\d{11}$/.test(estado.doc || '')) buscar(estado.doc);
 
   $('p1Seguir').onclick = () => {
     estado.doc = $('p1Doc').value.trim();
-    estado.nombre = $('p1Nombre').value.trim();
+    estado.nombre = nombreAuto || $('p1Nombre').value.trim();
     try {
       clienteDeEstado(estado); // solo valida; si algo falta, lo explica
       estado.faltaDoc = false;
@@ -506,6 +531,8 @@ function pasoResumen(estado, nav) {
           })),
         }),
       });
+      flujoActivo = null;
+      sessionStorage.removeItem('importar:borrador');
       location.hash = `#ticket/${res.id}`;
     } catch (e) {
       $err.textContent = e.message;
@@ -560,12 +587,22 @@ const SERVICIOS = {
   },
 };
 
-async function vistaEmitir() {
+async function vistaEmitir(sub) {
+  if (sub) {
+    if (flujoActivo && flujoActivo.base === '#emitir' && flujoActivo.pasos[sub]) { flujoActivo.pasos[sub](); return; }
+    location.replace('#emitir'); // recarga o enlace viejo: se empieza de nuevo
+    return;
+  }
   const estado = { origen: 'manual', tipo: 'boleta', doc: '', nombre: '', servicio: 'pasaje', items: [], avisos: [] };
-  const p1 = () => pasoCliente(estado, { alAtras: () => { location.hash = '#home'; }, alContinuar: () => p2() });
-  const p2 = () => pasoDetalleManual(estado, { alAtras: p1, alContinuar: () => p3() });
-  const p3 = () => pasoResumen(estado, { alAtras: p2 });
-  p1();
+  flujoActivo = {
+    base: '#emitir',
+    pasos: {
+      '1': () => pasoCliente(estado, { alAtras: () => history.back(), alContinuar: () => { location.hash = '#emitir/2'; } }),
+      '2': () => pasoDetalleManual(estado, { alAtras: () => history.back(), alContinuar: () => { location.hash = '#emitir/3'; } }),
+      '3': () => pasoResumen(estado, { alAtras: () => history.back() }),
+    },
+  };
+  location.replace('#emitir/1');
 }
 
 /** Paso 2 de 3 (manual): qué le cobramos — chips, cantidad y precio, sin teclear letras. */
@@ -1034,6 +1071,7 @@ async function vistaTicket(id) {
 async function vistaLista() {
   $app.innerHTML = `
     <h1>Comprobantes</h1>
+    <input id="q" placeholder="🔍 Nombre, DNI/RUC o número (B001-12)" style="margin-bottom:10px" class="no-imprimir">
     <div class="filtros no-imprimir">
       <div><label>Desde</label><input type="date" id="desde" value="${primerDiaDelMes()}"></div>
       <div><label>Hasta</label><input type="date" id="hasta" value="${hoyLima()}"></div>
@@ -1042,17 +1080,26 @@ async function vistaLista() {
     <div id="resultados"><p class="cargando">Cargando…</p></div>`;
 
   const cargar = async () => {
+    if (!document.getElementById('q')) return; // ya se salió de la vista
+    const q = document.getElementById('q').value.trim();
     const desde = document.getElementById('desde').value;
     const hasta = document.getElementById('hasta').value;
-    const filas = await api(`/api/comprobantes?desde=${desde}&hasta=${hasta}`);
+    // Con búsqueda se revisan TODAS las fechas (para ubicar uno puntual).
+    const ruta = q ? `/api/comprobantes?q=${encodeURIComponent(q)}` : `/api/comprobantes?desde=${desde}&hasta=${hasta}`;
+    const filas = await api(ruta);
     const cont = document.getElementById('resultados');
-    if (filas.length === 0) { cont.innerHTML = '<p class="ayuda">No hay comprobantes en ese rango.</p>'; return; }
+    if (!cont) return;
+    if (filas.length === 0) {
+      cont.innerHTML = `<p class="ayuda">${q ? `No se encontró nada con «${esc(q)}».` : 'No hay comprobantes en ese rango.'}</p>`;
+      return;
+    }
+    const nota = q ? `<p class="ayuda">Resultados de todas las fechas para «${esc(q)}»:</p>` : '';
     const chip = (f) => {
       const e = f.anulado_por ? 'anulado' : f.estado;
       const x = ESTADOS[e] || ESTADOS.pendiente;
       return `<span class="estado ${x.clase}">${e}</span>`;
     };
-    cont.innerHTML = `
+    cont.innerHTML = nota + `
       <div class="lista-movil">
         ${filas.map((f) => `
           <div class="comp-fila" data-id="${f.id}">
@@ -1083,6 +1130,11 @@ async function vistaLista() {
     });
   };
   document.getElementById('buscar').onclick = cargar;
+  let tmrBusqueda;
+  document.getElementById('q').addEventListener('input', () => {
+    clearTimeout(tmrBusqueda);
+    tmrBusqueda = setTimeout(cargar, 400);
+  });
   await cargar();
 }
 
@@ -1099,18 +1151,28 @@ async function vistaReportes() {
       <br>
       <button class="boton-linea" id="descargar" style="width:100%">⬇️ Descargar Excel/CSV para la computadora</button>
       <p class="ayuda">El archivo se abre en Excel y sirve de base para el Registro de Ventas del contador.</p>
+      <button class="boton-grande" id="paquete" style="width:100%;margin-top:12px">📦 Paquete completo para el contador (ZIP)</button>
+      <p class="ayuda">Arma un ZIP del rango elegido con TODO: el registro en Excel/CSV, y cada boleta, factura y
+        nota de crédito con su PDF, su XML firmado y su constancia CDR de SUNAT. Ideal una vez al mes.</p>
+      <p class="ayuda" id="paqueteEstado"></p>
     </div>`;
 
   const calcular = async () => {
     const desde = document.getElementById('desde').value;
     const hasta = document.getElementById('hasta').value;
     const filas = await api(`/api/comprobantes?desde=${desde}&hasta=${hasta}`);
-    const suma = (fn) => filas.reduce((a, f) => a + fn(f), 0);
+    // Las notas de crédito RESTAN de la venta (anulaciones y devoluciones).
+    const signo = (f) => (f.tipo === '07' ? -1 : 1);
+    const suma = (fn) => filas.reduce((a, f) => a + signo(f) * fn(f), 0);
     const totalVentas = suma((f) => Number(f.total));
     const igv = suma((f) => Number(f.total_igv || 0));
+    const notas = filas.filter((f) => f.tipo === '07');
+    const notasTotal = notas.reduce((a, f) => a + Number(f.total), 0);
     document.getElementById('resumen').innerHTML = `
       <div class="total-grande" style="text-align:left">Ventas: ${S(totalVentas)}</div>
-      <p>${filas.length} comprobantes · IGV: ${S(igv)} ·
+      <p>${filas.filter((f) => f.tipo !== '07').length} comprobantes
+        ${notas.length ? ` · ${notas.length} nota${notas.length === 1 ? '' : 's'} de crédito (−${S(notasTotal)})` : ''}
+        · IGV: ${S(igv)} ·
         Pendientes de envío: ${filas.filter((f) => f.estado === 'pendiente').length} ·
         Rechazados: ${filas.filter((f) => f.estado === 'rechazado').length}</p>`;
   };
@@ -1120,7 +1182,82 @@ async function vistaReportes() {
     const hasta = document.getElementById('hasta').value;
     location.href = `/api/export.csv?desde=${desde}&hasta=${hasta}&clave=${encodeURIComponent(clave())}`;
   };
+  document.getElementById('paquete').onclick = () => armarPaqueteContador();
   await calcular();
+}
+
+/** Convierte base64 a bytes (para los CDR guardados). */
+function base64AU8(b64) {
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+
+/**
+ * Paquete para el contador: ZIP con el registro (CSV) y cada comprobante con
+ * su PDF, su XML firmado y su CDR. Se arma aquí en el navegador, por páginas.
+ */
+async function armarPaqueteContador() {
+  const boton = document.getElementById('paquete');
+  const $est = document.getElementById('paqueteEstado');
+  const desde = document.getElementById('desde').value;
+  const hasta = document.getElementById('hasta').value;
+  boton.disabled = true;
+  try {
+    $est.textContent = 'Preparando el registro de ventas…';
+    const csv = await (await fetch(`/api/export.csv?desde=${desde}&hasta=${hasta}&clave=${encodeURIComponent(clave())}`)).text();
+    const archivos = {
+      'registro-ventas.csv': fflate.strToU8(csv),
+      'LEEME.txt': fflate.strToU8(
+        `Paquete de comprobantes electrónicos — Turismo Irazola\n` +
+        `Rango: ${desde} a ${hasta}\n\n` +
+        `registro-ventas.csv  Registro de ventas (las notas de crédito van en negativo).\n` +
+        `pdf/                 Representación impresa de cada comprobante.\n` +
+        `xml/                 XML firmados enviados a SUNAT (documento legal).\n` +
+        `cdr/                 Constancias de recepción de SUNAT (solo de lo ya aceptado).\n`,
+      ),
+    };
+    let pagina = 0;
+    let hayMas = true;
+    let n = 0;
+    while (hayMas) {
+      const lote = await api(`/api/paquete?desde=${desde}&hasta=${hasta}&pagina=${pagina}`);
+      for (const d of lote.comprobantes) {
+        const carpeta = d.tipo === '01' ? 'facturas' : d.tipo === '07' ? 'notas-credito' : 'boletas';
+        const nom = `${d.serie}-${d.correlativo}`;
+        if (d.xml) archivos[`xml/${carpeta}/${nom}.xml`] = fflate.strToU8(d.xml);
+        if (d.cdrZipBase64) archivos[`cdr/${carpeta}/R-${nom}.zip`] = base64AU8(d.cdrZipBase64);
+        try {
+          archivos[`pdf/${carpeta}/${nom}.pdf`] = new Uint8Array(await generarPdfTicket(d, d.empresa).arrayBuffer());
+        } catch { /* sin ese PDF el paquete sigue sirviendo */ }
+        n++;
+        $est.textContent = `Armando comprobante ${n} (${nom})…`;
+      }
+      hayMas = lote.hayMas;
+      pagina++;
+    }
+    if (!n) throw new Error('No hay comprobantes en ese rango');
+    $est.textContent = 'Comprimiendo…';
+    const zip = fflate.zipSync(archivos, { level: 6 });
+    const archivo = new File([zip], `paquete-contador_${desde}_a_${hasta}.zip`, { type: 'application/zip' });
+    let compartido = false;
+    if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+      try { await navigator.share({ files: [archivo], title: archivo.name }); compartido = true; } catch { /* cancelado */ }
+    }
+    if (!compartido) {
+      const url = URL.createObjectURL(archivo);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = archivo.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+    }
+    $est.textContent = `Listo: ${n} comprobantes en el ZIP.`;
+  } catch (e) {
+    $est.textContent = `No se pudo armar el paquete: ${e.message}`;
+  }
+  boton.disabled = false;
 }
 
 /* ---------- Enrutador ---------- */
@@ -1139,10 +1276,10 @@ async function enrutar() {
   try {
     if (hash === '#login') vistaLogin();
     else if (hash === '#home') vistaHome();
-    else if (hash.startsWith('#emitir')) await vistaEmitir();
+    else if (hash.startsWith('#emitir')) await vistaEmitir(hash.split('/')[1]);
     else if (hash.startsWith('#ticket/')) await vistaTicket(hash.split('/')[1]);
     else if (hash === '#lista') await vistaLista();
-    else if (hash === '#importar') await vistaImportar();
+    else if (hash.startsWith('#importar')) await vistaImportar(hash.split('/')[1]);
     else if (hash === '#guia') await vistaGuiaNueva();
     else if (hash === '#guias') await vistaGuias();
     else if (hash === '#reportes') await vistaReportes();

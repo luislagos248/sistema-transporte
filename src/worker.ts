@@ -184,11 +184,28 @@ app.get('/ver/:id/:token', async (c) => {
 </body></html>`);
 });
 
-// Toda la API (salvo salud) exige la clave de la app.
+// Toda la API (salvo salud) exige la clave de la app. Además, freno a la
+// fuerza bruta: 5 claves erradas en 15 minutos bloquean esa IP 15 minutos
+// (el bloqueo se revisa ANTES de validar, para que adivinar no sirva de nada).
 app.use('/api/*', async (c, next) => {
   if (c.req.path === '/api/salud') return next();
+  const ip = c.req.header('CF-Connecting-IP') ?? 'desconocida';
+  const ahora = new Date().toISOString();
+  const intento = await c.env.DB.prepare(
+    'SELECT fallos, ultimo, bloqueado_hasta FROM intentos_clave WHERE ip = ?1',
+  ).bind(ip).first<{ fallos: number; ultimo: string; bloqueado_hasta: string | null }>();
+  if (intento?.bloqueado_hasta && intento.bloqueado_hasta > ahora) {
+    return c.json({ error: 'Demasiados intentos. Espere 15 minutos y vuelva a probar.' }, 429);
+  }
   const clave = c.req.header('X-Clave') ?? c.req.query('clave');
   if (!claveValida(clave, c.env.APP_CLAVE)) {
+    const hace15min = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const fallos = intento && intento.ultimo > hace15min ? intento.fallos + 1 : 1;
+    const bloqueadoHasta = fallos >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null;
+    await c.env.DB.prepare(
+      'INSERT INTO intentos_clave (ip, fallos, ultimo, bloqueado_hasta) VALUES (?1, ?2, ?3, ?4) ' +
+        'ON CONFLICT(ip) DO UPDATE SET fallos = ?2, ultimo = ?3, bloqueado_hasta = ?4',
+    ).bind(ip, fallos, ahora, bloqueadoHasta).run();
     return c.json({ error: 'Clave incorrecta' }, 401);
   }
   return next();
@@ -456,12 +473,28 @@ app.post('/api/comprobantes', async (c) => {
 app.get('/api/comprobantes', async (c) => {
   const desde = c.req.query('desde');
   const hasta = c.req.query('hasta');
-  const filtro = desde && hasta ? 'WHERE fecha_emision BETWEEN ? AND ?' : '';
-  const stmt = c.env.DB.prepare(
-    `SELECT id, tipo, serie, correlativo, fecha_emision, hora_emision, cliente_nombre, cliente_num_doc,
+  const q = (c.req.query('q') ?? '').trim();
+  const CAMPOS = `SELECT id, tipo, serie, correlativo, fecha_emision, hora_emision, cliente_nombre, cliente_num_doc,
             total, total_igv, estado, cdr_codigo, cdr_descripcion, referencia_id, anulado_por
-     FROM comprobantes ${filtro} ORDER BY id DESC LIMIT 500`,
-  );
+     FROM comprobantes`;
+  if (q) {
+    // Búsqueda por nombre, documento o número (B001-12 / F001 12): en TODAS
+    // las fechas, porque se usa para ubicar un comprobante puntual (p.ej. anular).
+    const num = q.match(/^([FB][A-Z0-9]{3})[\s-]*(\d+)$/i);
+    const stmt = num
+      ? c.env.DB.prepare(`${CAMPOS} WHERE serie = ?1 AND correlativo = ?2 ORDER BY id DESC LIMIT 100`).bind(
+          num[1]!.toUpperCase(),
+          Number(num[2]),
+        )
+      : c.env.DB.prepare(
+          // Un número suelto también busca el correlativo (ej. "12" → B001-12).
+          `${CAMPOS} WHERE cliente_nombre LIKE ?1 OR cliente_num_doc LIKE ?2 OR correlativo = ?3 ORDER BY id DESC LIMIT 100`,
+        ).bind(`%${q}%`, `${q}%`, /^\d{1,7}$/.test(q) ? Number(q) : -1);
+    const { results } = await stmt.all();
+    return c.json(results);
+  }
+  const filtro = desde && hasta ? 'WHERE fecha_emision BETWEEN ? AND ?' : '';
+  const stmt = c.env.DB.prepare(`${CAMPOS} ${filtro} ORDER BY id DESC LIMIT 500`);
   const { results } = await (filtro ? stmt.bind(desde, hasta) : stmt).all();
   return c.json(results);
 });
@@ -626,22 +659,79 @@ app.get('/api/export.csv', async (c) => {
     return /[",\n;]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
   };
   const cab = 'Tipo,Serie,Numero,Fecha,Hora,TipoDocCliente,DocCliente,Cliente,Moneda,Gravado,Exonerado,Inafecto,IGV,Total,Estado,CodigoCDR';
-  const filas = results.map((r) =>
-    [
+  const filas = results.map((r) => {
+    // En el Registro de Ventas las notas de crédito van en NEGATIVO: restan.
+    const signo = r.tipo === '07' ? -1 : 1;
+    return [
       r.tipo === '01' ? 'FACTURA' : r.tipo === '07' ? 'NOTA CREDITO' : 'BOLETA', r.serie, r.correlativo, r.fecha_emision, r.hora_emision,
       r.cliente_tipo_doc, r.cliente_num_doc, r.cliente_nombre, r.moneda,
-      fmt(Number(r.total_gravado)), fmt(Number(r.total_exonerado)), fmt(Number(r.total_inafecto)),
-      fmt(Number(r.total_igv)), fmt(Number(r.total)), r.estado, r.cdr_codigo,
+      fmt(signo * Number(r.total_gravado)), fmt(signo * Number(r.total_exonerado)), fmt(signo * Number(r.total_inafecto)),
+      fmt(signo * Number(r.total_igv)), fmt(signo * Number(r.total)), r.estado, r.cdr_codigo,
     ]
       .map(esc)
-      .join(','),
-  );
+      .join(',');
+  });
   return new Response('﻿' + [cab, ...filas].join('\r\n'), {
     headers: {
       'Content-Type': 'text/csv; charset=utf-8',
       'Content-Disposition': `attachment; filename="ventas_${desde}_a_${hasta}.csv"`,
     },
   });
+});
+
+/**
+ * Paquete para el contador (por páginas): todos los comprobantes del rango
+ * (facturas, boletas y notas de crédito) con sus ítems, su XML firmado y su
+ * CDR. El ZIP con los PDF se arma en el navegador: el plan gratuito de
+ * Workers no da CPU para generar cientos de PDFs en el servidor.
+ */
+app.get('/api/paquete', async (c) => {
+  const desde = c.req.query('desde') ?? '0000-01-01';
+  const hasta = c.req.query('hasta') ?? '9999-12-31';
+  const pagina = Math.max(0, parseInt(c.req.query('pagina') ?? '0', 10) || 0);
+  // 12 por página: cada comprobante hace 3 consultas y el plan gratuito
+  // limita las subconsultas por petición.
+  const POR_PAGINA = 12;
+  const { results: filas } = await c.env.DB.prepare(
+    `SELECT * FROM comprobantes WHERE fecha_emision BETWEEN ?1 AND ?2
+     ORDER BY fecha_emision, serie, correlativo LIMIT ${POR_PAGINA + 1} OFFSET ?3`,
+  )
+    .bind(desde, hasta, pagina * POR_PAGINA)
+    .all<Record<string, unknown>>();
+  const hayMas = filas.length > POR_PAGINA;
+  const e = empresa(c.env);
+  const stmtItems = c.env.DB.prepare(
+    'SELECT descripcion, cantidad, unidad, precio_unitario, afectacion FROM comprobante_items WHERE comprobante_id = ?',
+  );
+  const stmtArchivo = c.env.DB.prepare('SELECT contenido FROM archivos WHERE clave = ?');
+  const comprobantes = [];
+  for (const row of filas.slice(0, POR_PAGINA)) {
+    const [items, xmlFila, cdrFila] = await Promise.all([
+      stmtItems.bind(row.id).all(),
+      stmtArchivo.bind(row.xml_key).first<{ contenido: string }>(),
+      row.cdr_key ? stmtArchivo.bind(row.cdr_key).first<{ contenido: string }>() : Promise.resolve(null),
+    ]);
+    const qr = textoQr({
+      rucEmisor: e.ruc,
+      tipo: String(row.tipo),
+      serie: String(row.serie),
+      correlativo: Number(row.correlativo),
+      igvCentimos: Number(row.total_igv),
+      totalCentimos: Number(row.total),
+      fechaEmision: String(row.fecha_emision),
+      clienteTipoDoc: String(row.cliente_tipo_doc),
+      clienteNumDoc: String(row.cliente_num_doc),
+    });
+    comprobantes.push({
+      ...row,
+      items: items.results,
+      qr,
+      empresa: e,
+      xml: xmlFila?.contenido ?? null,
+      cdrZipBase64: cdrFila?.contenido ?? null,
+    });
+  }
+  return c.json({ pagina, hayMas, comprobantes });
 });
 
 // Genera y envía el Resumen Diario con las boletas pendientes de una fecha.
