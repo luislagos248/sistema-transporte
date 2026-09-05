@@ -7,3 +7,5 @@ export * from './zip.js';
 export * from './soap.js';
 export * from './resumen.js';
 export * from './qr.js';
+export * from './gre.js';
+export * from './greApi.js';

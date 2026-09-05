@@ -18,6 +18,12 @@ SUNAT_AMBIENTE = "beta"
 # 'individual' (beta/pruebas: boletas por sendBill) | 'resumen' (producción:
 # boletas por Resumen Diario nocturno).
 MODO_ENVIO_BOLETAS = "individual"
+# API REST de Guías de Remisión: 'prueba' (servidor de pruebas de la
+# comunidad) | 'produccion'. Los secrets GRE_CLIENT_ID / GRE_CLIENT_SECRET se
+# generan en SOL -> Credenciales API.
+GRE_AMBIENTE = "prueba"
+# Número de registro MTC del transportista (vacío si no aplica).
+GRE_REGISTRO_MTC = ""
 # Datos del emisor. En producción se reemplaza por los datos reales del RUC.
 EMPRESA_JSON = '{"ruc":"20000000001","razonSocial":"EMPRESA DE PRUEBA S.A.C.","nombreComercial":"Tourismo Irasola","ubigeo":"250101","departamento":"UCAYALI","provincia":"CORONEL PORTILLO","distrito":"CALLERIA","direccion":"JR. DE PRUEBA NRO. 123"}'
 

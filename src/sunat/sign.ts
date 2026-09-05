@@ -20,14 +20,20 @@ const ALG = {
   c14n: 'http://www.w3.org/TR/2001/REC-xml-c14n-20010315',
   rsaSha1: 'http://www.w3.org/2000/09/xmldsig#rsa-sha1',
   sha1: 'http://www.w3.org/2000/09/xmldsig#sha1',
+  rsaSha256: 'http://www.w3.org/2001/04/xmldsig-more#rsa-sha256',
+  sha256: 'http://www.w3.org/2001/04/xmlenc#sha256',
   enveloped: 'http://www.w3.org/2000/09/xmldsig#enveloped-signature',
 };
 
-export function firmarXml(xml: string, cert: Certificado): string {
+/**
+ * `algoritmo`: 'sha1' para comprobantes CPE (validado en beta), 'sha256'
+ * para las GRE (las guías modernas usan RSA-SHA256).
+ */
+export function firmarXml(xml: string, cert: Certificado, algoritmo: 'sha1' | 'sha256' = 'sha1'): string {
   const sig = new SignedXml({
     privateKey: cert.privateKeyPem,
     publicCert: cert.certPem,
-    signatureAlgorithm: ALG.rsaSha1,
+    signatureAlgorithm: algoritmo === 'sha256' ? ALG.rsaSha256 : ALG.rsaSha1,
     canonicalizationAlgorithm: ALG.c14n,
   });
   // C14N va explícita como transformada de la Reference: xml-crypto aplica al
@@ -36,7 +42,7 @@ export function firmarXml(xml: string, cert: Certificado): string {
   sig.addReference({
     xpath: '/*',
     isEmptyUri: true,
-    digestAlgorithm: ALG.sha1,
+    digestAlgorithm: algoritmo === 'sha256' ? ALG.sha256 : ALG.sha1,
     transforms: [ALG.enveloped, ALG.c14n],
   });
   // xml-crypto inserta la firma ANTES de calcular el digest y su transformada

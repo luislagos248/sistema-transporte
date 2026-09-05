@@ -7,7 +7,23 @@ el celular en pocos pasos y con costo cero de infraestructura
 
 Ver el plan completo del proyecto en [PLAN.md](PLAN.md).
 
-## Estado — Fases 1, 2 y notas de crédito completadas ✔
+## Estado — Fases 1, 2, notas de crédito y GRE-Transportista completadas ✔
+
+**GRE-Transportista (tipo 31, serie V001):** guía de remisión electrónica para
+el traslado de encomiendas/carga (obligatoria desde julio 2026). XML
+DespatchAdvice UBL 2.1 según el Anexo N° 14 de la R.S. 123-2022/SUNAT
+(transportista en DespatchSupplierParty, remitente en Delivery/Despatch/
+DespatchParty, registro MTC, vehículo, conductor, ruta con ubigeos), firmado
+con RSA-SHA256 y enviado por la **API REST de GRE** (token OAuth2 con las
+Credenciales API de SOL -> envío ZIP+SHA256 -> ticket -> CDR). La app agrega
+"Guía de carga" con autocompletado de flota/conductores y lista de guías con
+estado. Flujo completo validado contra el servidor de pruebas de la API
+(SUNAT no ofrece beta pública para GRE): guía enviada, ticket consultado por
+cron y **aceptada con CDR**.
+
+> Producción GRE: generar las Credenciales API en SOL y cargarlas como
+> secrets `GRE_CLIENT_ID` / `GRE_CLIENT_SECRET`; poner `GRE_AMBIENTE =
+> "produccion"` y el `GRE_REGISTRO_MTC` si corresponde.
 
 **Notas de crédito (tipo 07):** anulación/corrección guiada desde el ticket
 (motivos del catálogo 09: anulación de la operación, error en RUC, devolución

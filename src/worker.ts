@@ -5,6 +5,8 @@ import { generarInvoiceXml, generarNotaCreditoXml } from './sunat/ubl.js';
 import { firmarXml, extraerDigest } from './sunat/sign.js';
 import { ENDPOINTS, getStatus, sendBill, sendSummary, SunatError } from './sunat/soap.js';
 import { generarResumenXml, type BoletaResumen } from './sunat/resumen.js';
+import { generarGuiaTransportistaXml, type GuiaTransportista } from './sunat/gre.js';
+import { consultarGuia, enviarGuia, ENDPOINTS_GRE, obtenerTokenGre } from './sunat/greApi.js';
 import { textoQr } from './sunat/qr.js';
 import { fmt } from './sunat/calculo.js';
 
@@ -27,9 +29,15 @@ export interface Env {
   SOL_USUARIO: string;
   SOL_CLAVE: string;
   APP_CLAVE: string; // clave de acceso de la app (pantalla de ingreso)
+  // Credenciales API GRE (secrets; se generan en SOL -> Credenciales API):
+  GRE_CLIENT_ID: string;
+  GRE_CLIENT_SECRET: string;
   // Vars:
   SUNAT_AMBIENTE: 'beta' | 'produccion';
   MODO_ENVIO_BOLETAS: 'individual' | 'resumen';
+  GRE_AMBIENTE: 'prueba' | 'produccion';
+  /** Número de registro MTC del transportista (vacío si no aplica). */
+  GRE_REGISTRO_MTC?: string;
   EMPRESA_JSON: string;
 }
 
@@ -369,6 +377,199 @@ app.get('/api/resumenes', async (c) => {
   return c.json(results);
 });
 
+// ---------- Guías de Remisión - Transportista (GRE-T) ----------
+
+interface NuevaGuiaBody {
+  remitente: { tipoDoc: TipoDocIdentidad; numDoc: string; nombre: string };
+  destinatario: { tipoDoc: TipoDocIdentidad; numDoc: string; nombre: string };
+  bienes: Array<{ descripcion: string; cantidad: number; unidad?: string }>;
+  pesoKg: number;
+  placa: string;
+  tarjetaCirculacion?: string;
+  conductor: { numDoc: string; nombres: string; apellidos: string; licencia: string };
+  partida: { ubigeo: string; direccion: string };
+  llegada: { ubigeo: string; direccion: string };
+  fechaTraslado?: string;
+  comprobanteId?: number;
+  observacion?: string;
+}
+
+app.get('/api/guias/recursos', async (c) => {
+  const [veh, cond] = await Promise.all([
+    c.env.DB.prepare('SELECT placa, tarjeta_circulacion FROM vehiculos ORDER BY placa').all(),
+    c.env.DB.prepare('SELECT num_doc, nombres, apellidos, licencia FROM conductores ORDER BY apellidos').all(),
+  ]);
+  return c.json({ vehiculos: veh.results, conductores: cond.results, empresa: empresa(c.env) });
+});
+
+app.get('/api/guias', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT id, serie, correlativo, fecha_emision, fecha_traslado, remitente_nombre, destinatario_nombre,
+            placa, llegada_direccion, peso_kg, estado, ticket, cdr_codigo, cdr_descripcion
+     FROM guias ORDER BY id DESC LIMIT 200`,
+  ).all();
+  return c.json(results);
+});
+
+app.get('/api/guias/:id', async (c) => {
+  const id = Number(c.req.param('id'));
+  const g = await c.env.DB.prepare('SELECT * FROM guias WHERE id = ?').bind(id).first<Record<string, unknown>>();
+  if (!g) return c.json({ error: 'No existe' }, 404);
+  const { results: bienes } = await c.env.DB.prepare(
+    'SELECT descripcion, cantidad, unidad FROM guia_bienes WHERE guia_id = ?',
+  )
+    .bind(id)
+    .all();
+  return c.json({ ...g, bienes, empresa: empresa(c.env) });
+});
+
+app.post('/api/guias', async (c) => {
+  const b = await c.req.json<NuevaGuiaBody>();
+  for (const [campo, ok] of [
+    ['remitente', b.remitente?.numDoc && b.remitente.nombre],
+    ['destinatario', b.destinatario?.numDoc && b.destinatario.nombre],
+    ['bienes', b.bienes?.length && b.bienes.every((x) => x.descripcion?.trim() && x.cantidad > 0)],
+    ['peso', b.pesoKg > 0],
+    ['placa', b.placa?.trim()],
+    ['conductor', b.conductor?.numDoc && b.conductor.nombres && b.conductor.apellidos && b.conductor.licencia],
+    ['partida', /^\d{6}$/.test(b.partida?.ubigeo ?? '') && b.partida.direccion],
+    ['llegada', /^\d{6}$/.test(b.llegada?.ubigeo ?? '') && b.llegada.direccion],
+  ] as const) {
+    if (!ok) return c.json({ error: `Datos incompletos o inválidos: ${campo}` }, 400);
+  }
+
+  const serie = await c.env.DB.prepare(
+    "UPDATE series SET ultimo_correlativo = ultimo_correlativo + 1 WHERE serie = 'V001' AND tipo = '31' RETURNING ultimo_correlativo",
+  ).first<{ ultimo_correlativo: number }>();
+  if (!serie) return c.json({ error: 'Serie V001 no registrada' }, 400);
+
+  const { fecha, hora } = ahoraLima();
+  const guia: GuiaTransportista = {
+    serie: 'V001',
+    correlativo: serie.ultimo_correlativo,
+    fechaEmision: fecha,
+    horaEmision: hora,
+    emisor: empresa(c.env),
+    registroMtc: c.env.GRE_REGISTRO_MTC || undefined,
+    remitente: b.remitente,
+    destinatario: b.destinatario,
+    fechaInicioTraslado: b.fechaTraslado ?? fecha,
+    pesoTotalKg: b.pesoKg,
+    vehiculo: { placa: b.placa.trim().toUpperCase(), tarjetaCirculacion: b.tarjetaCirculacion?.trim() || undefined },
+    conductor: { tipoDoc: '1', ...b.conductor },
+    partida: b.partida,
+    llegada: b.llegada,
+    bienes: b.bienes.map((x) => ({ descripcion: x.descripcion.trim(), cantidad: x.cantidad, unidad: x.unidad ?? 'NIU' })),
+    observacion: b.observacion,
+  };
+
+  let g;
+  try {
+    g = generarGuiaTransportistaXml(guia);
+  } catch (e) {
+    return c.json({ error: String(e instanceof Error ? e.message : e) }, 400);
+  }
+  const firmado = firmarXml(g.xml, { privateKeyPem: c.env.CERT_KEY, certPem: c.env.CERT_PEM }, 'sha256');
+  const xmlKey = `gre/${g.nombre}.xml`;
+  await c.env.ARCHIVO.put(xmlKey, firmado);
+
+  const ins = await c.env.DB.prepare(
+    `INSERT INTO guias (serie, correlativo, fecha_emision, hora_emision, fecha_traslado,
+       remitente_tipo_doc, remitente_num_doc, remitente_nombre,
+       destinatario_tipo_doc, destinatario_num_doc, destinatario_nombre,
+       placa, tarjeta_circulacion, conductor_num_doc, conductor_nombres, conductor_apellidos, conductor_licencia,
+       partida_ubigeo, partida_direccion, llegada_ubigeo, llegada_direccion, peso_kg, xml_key, comprobante_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+  )
+    .bind(
+      guia.serie, guia.correlativo, fecha, hora, guia.fechaInicioTraslado,
+      guia.remitente.tipoDoc, guia.remitente.numDoc, guia.remitente.nombre,
+      guia.destinatario.tipoDoc, guia.destinatario.numDoc, guia.destinatario.nombre,
+      guia.vehiculo.placa, guia.vehiculo.tarjetaCirculacion ?? null,
+      guia.conductor.numDoc, guia.conductor.nombres, guia.conductor.apellidos, guia.conductor.licencia,
+      guia.partida.ubigeo, guia.partida.direccion, guia.llegada.ubigeo, guia.llegada.direccion,
+      guia.pesoTotalKg, xmlKey, b.comprobanteId ?? null,
+    )
+    .first<{ id: number }>();
+  const guiaId = ins!.id;
+
+  const stmtBien = c.env.DB.prepare('INSERT INTO guia_bienes (guia_id, descripcion, cantidad, unidad) VALUES (?, ?, ?, ?)');
+  await c.env.DB.batch([
+    ...guia.bienes.map((x) => stmtBien.bind(guiaId, x.descripcion, x.cantidad, x.unidad)),
+    c.env.DB.prepare('INSERT INTO vehiculos (placa, tarjeta_circulacion) VALUES (?, ?) ON CONFLICT(placa) DO UPDATE SET tarjeta_circulacion = excluded.tarjeta_circulacion')
+      .bind(guia.vehiculo.placa, guia.vehiculo.tarjetaCirculacion ?? null),
+    c.env.DB.prepare('INSERT INTO conductores (num_doc, nombres, apellidos, licencia) VALUES (?, ?, ?, ?) ON CONFLICT(num_doc) DO UPDATE SET nombres = excluded.nombres, apellidos = excluded.apellidos, licencia = excluded.licencia')
+      .bind(guia.conductor.numDoc, guia.conductor.nombres, guia.conductor.apellidos, guia.conductor.licencia),
+  ]);
+
+  c.executionCtx.waitUntil(enviarGuiaASunat(c.env, guiaId));
+  return c.json({ id: guiaId, numero: `${guia.serie}-${guia.correlativo}`, estado: 'pendiente' });
+});
+
+function credencialesGre(env: Env) {
+  if (!env.GRE_CLIENT_ID || !env.GRE_CLIENT_SECRET) {
+    throw new SunatError('GRE-CONFIG', 'Faltan las credenciales API de GRE (GRE_CLIENT_ID / GRE_CLIENT_SECRET)');
+  }
+  const emp = empresa(env);
+  return {
+    ruc: emp.ruc,
+    usuario: env.SOL_USUARIO,
+    clave: env.SOL_CLAVE,
+    clientId: env.GRE_CLIENT_ID,
+    clientSecret: env.GRE_CLIENT_SECRET,
+  };
+}
+
+async function enviarGuiaASunat(env: Env, guiaId: number): Promise<void> {
+  const g = await env.DB.prepare("SELECT serie, correlativo, xml_key FROM guias WHERE id = ? AND estado = 'pendiente'")
+    .bind(guiaId)
+    .first<{ serie: string; correlativo: number; xml_key: string }>();
+  if (!g) return;
+  const obj = await env.ARCHIVO.get(g.xml_key);
+  if (!obj) return;
+  const endpoints = ENDPOINTS_GRE[env.GRE_AMBIENTE] ?? ENDPOINTS_GRE.produccion!;
+  try {
+    const token = await obtenerTokenGre(endpoints, credencialesGre(env));
+    const nombre = `${empresa(env).ruc}-31-${g.serie}-${g.correlativo}`;
+    const ticket = await enviarGuia(endpoints, token, nombre, await obj.text());
+    await env.DB.prepare("UPDATE guias SET ticket = ?, estado = 'enviada' WHERE id = ?").bind(ticket, guiaId).run();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await env.DB.prepare('UPDATE guias SET cdr_descripcion = ? WHERE id = ?')
+      .bind(`(sin CDR aún) ${msg}`.slice(0, 500), guiaId)
+      .run();
+  }
+}
+
+async function consultarTicketGuia(env: Env, guiaId: number): Promise<void> {
+  const g = await env.DB.prepare("SELECT serie, correlativo, ticket FROM guias WHERE id = ? AND estado = 'enviada'")
+    .bind(guiaId)
+    .first<{ serie: string; correlativo: number; ticket: string }>();
+  if (!g?.ticket) return;
+  const endpoints = ENDPOINTS_GRE[env.GRE_AMBIENTE] ?? ENDPOINTS_GRE.produccion!;
+  try {
+    const token = await obtenerTokenGre(endpoints, credencialesGre(env));
+    const st = await consultarGuia(endpoints, token, g.ticket);
+    if (st.codigo === '98') return;
+    if (st.codigo === '0' && st.cdrZipBase64) {
+      const nombre = `${empresa(env).ruc}-31-${g.serie}-${g.correlativo}`;
+      const cdrKey = `cdr/R-${nombre}.zip`;
+      await env.ARCHIVO.put(cdrKey, Uint8Array.from(atob(st.cdrZipBase64), (ch) => ch.charCodeAt(0)));
+      await env.DB.prepare(
+        "UPDATE guias SET estado = 'aceptada', cdr_codigo = '0', cdr_descripcion = 'Guía aceptada por SUNAT', cdr_key = ? WHERE id = ?",
+      )
+        .bind(cdrKey, guiaId)
+        .run();
+    } else if (st.codigo === '99') {
+      await env.DB.prepare("UPDATE guias SET estado = 'rechazada', cdr_codigo = '99', cdr_descripcion = ? WHERE id = ?")
+        .bind((st.error ?? 'Rechazada por SUNAT').slice(0, 500), guiaId)
+        .run();
+    }
+  } catch {
+    // se reintenta en el siguiente cron
+  }
+}
+
 async function enviarASunat(env: Env, comprobanteId: number): Promise<void> {
   const row = await env.DB.prepare(
     'SELECT tipo, serie, correlativo, xml_key, estado FROM comprobantes WHERE id = ?',
@@ -564,6 +765,13 @@ const worker: ExportedHandler<Env> = {
     ).all<{ id: number; estado: string }>();
     for (const r of resPend) {
       ctx.waitUntil(r.estado === 'pendiente' ? reintentarResumen(env, r.id) : consultarTicketResumen(env, r.id));
+    }
+
+    const { results: guiasPend } = await env.DB.prepare(
+      "SELECT id, estado FROM guias WHERE estado IN ('pendiente', 'enviada') ORDER BY id LIMIT 20",
+    ).all<{ id: number; estado: string }>();
+    for (const gp of guiasPend) {
+      ctx.waitUntil(gp.estado === 'pendiente' ? enviarGuiaASunat(env, gp.id) : consultarTicketGuia(env, gp.id));
     }
   },
 };
