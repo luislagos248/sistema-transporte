@@ -6,3 +6,4 @@ dist/
 *.pfx
 *.p12
 test/fixtures/generated/
+.dev.vars

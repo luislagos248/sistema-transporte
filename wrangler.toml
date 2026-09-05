@@ -8,8 +8,16 @@ compatibility_date = "2026-08-01"
 # xml-crypto usa node:crypto; nodejs_compat lo habilita en Workers.
 compatibility_flags = ["nodejs_compat"]
 
+[assets]
+directory = "./public"
+# La API siempre pasa por el Worker; el resto se sirve como estático (PWA).
+run_worker_first = ["/api/*"]
+
 [vars]
 SUNAT_AMBIENTE = "beta"
+# 'individual' (beta/pruebas: boletas por sendBill) | 'resumen' (producción:
+# boletas por Resumen Diario nocturno).
+MODO_ENVIO_BOLETAS = "individual"
 # Datos del emisor. En producción se reemplaza por los datos reales del RUC.
 EMPRESA_JSON = '{"ruc":"20000000001","razonSocial":"EMPRESA DE PRUEBA S.A.C.","nombreComercial":"Tourismo Irasola","ubigeo":"250101","departamento":"UCAYALI","provincia":"CORONEL PORTILLO","distrito":"CALLERIA","direccion":"JR. DE PRUEBA NRO. 123"}'
 
@@ -23,6 +31,6 @@ binding = "ARCHIVO"
 bucket_name = "irasola-archivo"      # npx wrangler r2 bucket create irasola-archivo
 
 [triggers]
-# Reintentos de envíos pendientes cada hora (el resumen diario nocturno se
-# agregará en la fase correspondiente).
-crons = ["0 * * * *"]
+# Cada hora: reintentos de envíos y consulta de tickets de resúmenes.
+# 03:00 UTC (22:00 en Perú): Resumen Diario de boletas del día.
+crons = ["0 * * * *", "0 3 * * *"]

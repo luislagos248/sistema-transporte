@@ -5,3 +5,5 @@ export * from './ubl.js';
 export * from './sign.js';
 export * from './zip.js';
 export * from './soap.js';
+export * from './resumen.js';
+export * from './qr.js';

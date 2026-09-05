@@ -1,0 +1,243 @@
+/* Tourismo Irasola — móvil primero, cómodo también en PC. */
+
+:root {
+  --verde: #0d5c46;
+  --verde-claro: #e7f3ef;
+  --tinta: #1c2b27;
+  --gris: #667572;
+  --borde: #d5e0dc;
+  --fondo: #f4f7f6;
+  --rojo: #b3261e;
+  --ambar: #8a6d00;
+  --radio: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--fondo);
+  color: var(--tinta);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 17px;
+}
+
+/* ---------- Cabecera ---------- */
+#cabecera {
+  background: var(--verde);
+  color: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.cabecera-int {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.marca { color: #fff; text-decoration: none; font-weight: 700; font-size: 1.1rem; }
+#cabecera nav { display: flex; gap: 4px; }
+#cabecera nav a {
+  color: #dfeeea;
+  text-decoration: none;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+#cabecera nav a.activa, #cabecera nav a:hover { background: rgba(255, 255, 255, 0.16); color: #fff; }
+
+/* ---------- Contenido ---------- */
+#app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px;
+  padding-bottom: 48px;
+}
+#app.cargando { text-align: center; color: var(--gris); padding-top: 60px; }
+
+h1 { font-size: 1.35rem; margin: 8px 0 16px; }
+h2 { font-size: 1.1rem; margin: 18px 0 8px; }
+
+.tarjeta {
+  background: #fff;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 18px;
+  margin-bottom: 14px;
+}
+
+/* ---------- Botones ---------- */
+button, .boton {
+  font: inherit;
+  border: none;
+  border-radius: var(--radio);
+  padding: 14px 18px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--verde);
+  color: #fff;
+  text-decoration: none;
+  display: inline-block;
+  text-align: center;
+}
+button:active, .boton:active { transform: scale(0.98); }
+button:disabled { opacity: 0.5; cursor: wait; }
+.boton-suave { background: var(--verde-claro); color: var(--verde); }
+.boton-linea { background: #fff; color: var(--verde); border: 2px solid var(--verde); }
+.boton-grande { font-size: 1.25rem; padding: 22px; width: 100%; }
+
+/* Home: accesos grandes */
+.accesos {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 10px;
+}
+.acceso {
+  background: #fff;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 26px 12px;
+  text-align: center;
+  text-decoration: none;
+  color: var(--tinta);
+  font-weight: 700;
+  font-size: 1.15rem;
+}
+.acceso .icono { display: block; font-size: 2.3rem; margin-bottom: 8px; }
+.acceso:hover { border-color: var(--verde); background: var(--verde-claro); }
+
+/* ---------- Formularios ---------- */
+label { display: block; font-weight: 600; margin: 14px 0 6px; }
+input, select {
+  font: inherit;
+  width: 100%;
+  padding: 13px 12px;
+  border: 1.5px solid var(--borde);
+  border-radius: 10px;
+  background: #fff;
+}
+input:focus, select:focus { outline: 2px solid var(--verde); border-color: var(--verde); }
+input.monto { font-size: 1.5rem; font-weight: 700; text-align: right; }
+.fila { display: flex; gap: 10px; }
+.fila > * { flex: 1; }
+.ayuda { color: var(--gris); font-size: 0.85rem; margin-top: 4px; }
+.error { color: var(--rojo); font-weight: 600; margin: 10px 0; }
+
+.sugerencias { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.sugerencias button {
+  background: var(--verde-claro);
+  color: var(--verde);
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.conmutador { display: flex; border: 1.5px solid var(--borde); border-radius: 10px; overflow: hidden; }
+.conmutador button {
+  flex: 1;
+  background: #fff;
+  color: var(--gris);
+  border-radius: 0;
+  padding: 12px;
+}
+.conmutador button.activa { background: var(--verde); color: #fff; }
+
+.item-linea {
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 8px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  background: var(--verde-claro);
+}
+.item-linea .quitar { background: none; color: var(--rojo); padding: 4px 8px; font-size: 1.1rem; }
+
+.total-grande {
+  font-size: 2rem;
+  font-weight: 800;
+  text-align: right;
+  margin: 12px 0;
+}
+
+/* ---------- Estados ---------- */
+.estado { padding: 4px 10px; border-radius: 999px; font-size: 0.8rem; font-weight: 700; white-space: nowrap; }
+.estado.pendiente { background: #fff3cd; color: var(--ambar); }
+.estado.aceptado { background: #d7efe3; color: var(--verde); }
+.estado.rechazado { background: #f8d7da; color: var(--rojo); }
+
+/* ---------- Lista ---------- */
+.filtros { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 12px; }
+.filtros > div { flex: 1; min-width: 130px; }
+
+.lista-movil .comp-fila {
+  background: #fff;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+}
+.comp-fila .num { font-weight: 700; }
+.comp-fila .cli { color: var(--gris); font-size: 0.9rem; }
+.comp-fila .imp { font-weight: 800; text-align: right; }
+
+table.lista-pc { display: none; width: 100%; border-collapse: collapse; background: #fff; border-radius: var(--radio); overflow: hidden; }
+.lista-pc th, .lista-pc td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--borde); }
+.lista-pc th { background: var(--verde-claro); color: var(--verde); font-size: 0.85rem; text-transform: uppercase; }
+.lista-pc tbody tr { cursor: pointer; }
+.lista-pc tbody tr:hover { background: var(--fondo); }
+.lista-pc td.imp { text-align: right; font-weight: 700; }
+
+/* ---------- Ticket ---------- */
+#ticket {
+  background: #fff;
+  border: 1px dashed var(--gris);
+  border-radius: 8px;
+  max-width: 360px;
+  margin: 0 auto 16px;
+  padding: 18px;
+  font-size: 0.95rem;
+}
+#ticket .centro { text-align: center; }
+#ticket .emp { font-weight: 800; font-size: 1.05rem; }
+#ticket .doc-titulo { font-weight: 800; margin: 8px 0; }
+#ticket hr { border: none; border-top: 1px dashed var(--borde); margin: 10px 0; }
+#ticket .linea { display: flex; justify-content: space-between; gap: 8px; }
+#ticket .tot { font-size: 1.2rem; font-weight: 800; }
+#ticket .qr { display: flex; justify-content: center; margin: 12px 0 4px; }
+#ticket .qr svg { width: 150px; height: 150px; }
+#ticket .leyenda { font-size: 0.8rem; color: var(--gris); }
+.acciones-ticket { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-width: 360px; margin: 0 auto; }
+.acciones-ticket .ancho { grid-column: 1 / -1; }
+
+/* ---------- Escritorio ---------- */
+@media (min-width: 760px) {
+  body { font-size: 16px; }
+  .accesos { grid-template-columns: repeat(4, 1fr); }
+  .lista-movil { display: none; }
+  table.lista-pc { display: table; }
+  .dos-columnas { display: grid; grid-template-columns: minmax(340px, 460px) 1fr; gap: 18px; align-items: start; }
+  .boton-grande { font-size: 1.1rem; padding: 16px; }
+}
+
+/* ---------- Impresión (ticketera / A4) ---------- */
+@media print {
+  #cabecera, .acciones-ticket, .no-imprimir { display: none !important; }
+  body, #app { background: #fff; margin: 0; padding: 0; max-width: none; }
+  #ticket { border: none; max-width: 260px; margin: 0; padding: 0; }
+}

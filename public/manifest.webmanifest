@@ -1,0 +1,13 @@
+{
+  "name": "Tourismo Irasola — Facturación",
+  "short_name": "Irasola",
+  "description": "Emisión de boletas y facturas electrónicas",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7f6",
+  "theme_color": "#0d5c46",
+  "lang": "es-PE",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

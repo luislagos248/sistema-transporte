@@ -7,7 +7,29 @@ el celular en pocos pasos y con costo cero de infraestructura
 
 Ver el plan completo del proyecto en [PLAN.md](PLAN.md).
 
-## Estado — Fase 1 completada ✔
+## Estado — Fases 1 y 2 completadas ✔
+
+**Fase 2** agrega la aplicación usable (celular y PC) y el circuito completo de boletas:
+
+- **PWA responsive** (`public/`): instalable en el celular, cómoda en PC.
+  Emisión en 3 pasos con descripción libre y monto que fija la emisora,
+  sugerencias de descripciones recientes, boleta/factura, cliente varios o
+  con DNI/RUC, IGV opcional (exonerado Amazonía por defecto).
+- **Ticket** con QR reglamentario, botón compartir (WhatsApp) e imprimir
+  (formato ticketera), y estado SUNAT visible.
+- **Lista de comprobantes** (tarjetas en móvil, tabla en PC) y **reportes**
+  con **exportación CSV/Excel** para la computadora.
+- **Resumen Diario de boletas** (SummaryDocuments RC): generación, firma,
+  `sendSummary` + `getStatus` por ticket, cron nocturno (22:00 Perú) y
+  reintentos. Formato verificado contra Greenter; la cola de resúmenes del
+  ambiente beta de SUNAT devuelve 0135 de forma intermitente (limitación de
+  beta, no del formato).
+- **Clave de acceso** para toda la API/app (secret `APP_CLAVE`).
+- Flujo verificado de punta a punta en el runtime real de Workers
+  (`wrangler dev` local + envío real a SUNAT beta: factura y boleta
+  ACEPTADAS emitidas desde la API).
+
+## Fase 1 (núcleo SUNAT)
 
 Núcleo de emisión validado contra el **ambiente beta real de SUNAT**:
 
