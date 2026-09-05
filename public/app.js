@@ -131,6 +131,7 @@ async function vistaHome() {
     </div>
     <h2>Más opciones</h2>
     <div class="accesos">
+      <a class="acceso" href="#importar"><span class="icono">📥</span>Importar mensaje</a>
       <a class="acceso" href="#guia"><span class="icono">🚚</span>Guía de carga</a>
       <a class="acceso" href="#guias"><span class="icono">🗒️</span>Guías emitidas</a>
       <a class="acceso" href="#lista"><span class="icono">📋</span>Comprobantes</a>
@@ -152,6 +153,153 @@ async function vistaHome() {
     document.getElementById('ventasHoy').textContent = 'S/ 0.00';
     document.getElementById('detalleHoy').textContent = 'Sin ventas registradas hoy';
   }
+}
+
+/* ---------- Importar mensaje de WhatsApp ---------- */
+
+async function vistaImportar() {
+  const compartido = sessionStorage.getItem('importar:texto') || '';
+  sessionStorage.removeItem('importar:texto');
+
+  $app.innerHTML = `
+    <h1>📥 Importar mensaje</h1>
+    <div class="dos-columnas">
+    <div>
+    <div class="tarjeta">
+      <label for="txtMsg">Mensaje de WhatsApp o nota</label>
+      <textarea id="txtMsg" rows="7" style="width:100%;font:inherit;padding:14px;border:1.5px solid transparent;border-radius:12px;background:var(--campo);resize:vertical">${esc(compartido)}</textarea>
+      <p class="ayuda">Desde WhatsApp: mantenga presionado el mensaje → Compartir → <b>Turismo Irazola</b> (con la app instalada). También puede copiar y pegar aquí. Si mandaron los datos en varios mensajes, péguelos todos juntos.</p>
+      <br>
+      <button class="boton-grande" id="analizar">🔍 Analizar mensaje</button>
+    </div>
+    </div>
+    <div id="resultado"></div>
+    </div>`;
+
+  const $res = document.getElementById('resultado');
+
+  const analizar = async () => {
+    const texto = document.getElementById('txtMsg').value.trim();
+    if (!texto) { $res.innerHTML = '<div class="tarjeta"><p class="error">Pegue o comparta primero el mensaje.</p></div>'; return; }
+    $res.innerHTML = '<div class="tarjeta"><p class="ayuda">Analizando…</p></div>';
+    let a;
+    try { a = await api('/api/analizar-mensaje', { method: 'POST', body: JSON.stringify({ texto }) }); }
+    catch (e) { $res.innerHTML = `<div class="tarjeta"><p class="error">${esc(e.message)}</p></div>`; return; }
+
+    const falta = (campo) => a.faltantes.includes(campo);
+    const marca = (cond) => (cond ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : '');
+    const tipoCpe = a.tipoDoc === '6' ? 'factura' : 'boleta';
+    const reparto = a.reparto || { cantidad: a.cantidad || 1, precioUnitarioCentimos: null };
+
+    $res.innerHTML = `
+    <div class="tarjeta">
+      <h2 style="margin-top:0">Datos detectados</h2>
+      ${a.faltantes.length ? `<p class="error">Falta confirmar: ${a.faltantes.map((f) => ({ documento: 'el DNI/RUC', monto: 'el monto', descripcion: 'la descripción' })[f] || f).join(', ')}. Pregunte al cliente y complete abajo.</p>` : '<p class="ayuda">Revise que todo esté correcto y emita.</p>'}
+      ${a.avisos.map((v) => `<p class="ayuda">ℹ️ ${esc(v)}</p>`).join('')}
+
+      <div class="conmutador" id="impTipo">
+        <button data-v="boleta" class="${tipoCpe === 'boleta' ? 'activa' : ''}">BOLETA</button>
+        <button data-v="factura" class="${tipoCpe === 'factura' ? 'activa' : ''}">FACTURA</button>
+      </div>
+      <div class="conmutador" id="impRubro" style="margin-top:8px">
+        <button data-v="transporte" class="activa">TRANSPORTE</button>
+        <button data-v="hospedaje">HOSPEDAJE</button>
+      </div>
+
+      <label>DNI o RUC del cliente</label>
+      <input id="impDoc" inputmode="numeric" maxlength="11" value="${esc(a.numDoc || '')}" ${marca(falta('documento'))}>
+      <label>Nombre / Razón social</label>
+      <input id="impNombre" value="${esc(a.nombre || '')}" placeholder="Se busca solo al poner el documento">
+      <p class="ayuda" id="impBusqueda"></p>
+
+      <label>Descripción</label>
+      <input id="impDesc" value="${esc(a.descripcion || '')}" ${marca(falta('descripcion'))}>
+      <div class="fila">
+        <div><label>Cantidad</label><input id="impCant" inputmode="numeric" value="${reparto.cantidad}"></div>
+        <div><label>Monto TOTAL (S/)</label><input id="impMonto" class="monto" inputmode="decimal" value="${a.montoTotalCentimos ? (a.montoTotalCentimos / 100).toFixed(2) : ''}" ${marca(falta('monto'))}></div>
+      </div>
+      <label><input type="checkbox" id="impIgv" style="width:auto"> Operación con IGV (18%)</label>
+      <p class="error" id="impErr" hidden></p>
+      <br>
+      <button class="boton-grande" id="impEmitir">EMITIR</button>
+    </div>`;
+
+    const seg = (id) => {
+      document.querySelectorAll(`#${id} button`).forEach((b) => {
+        b.onclick = () => document.querySelectorAll(`#${id} button`).forEach((x) => x.classList.toggle('activa', x === b));
+      });
+    };
+    seg('impTipo');
+    seg('impRubro');
+
+    // Consulta automática del nombre por RUC/DNI (con caché en el servidor).
+    const buscarNombre = async () => {
+      const doc = document.getElementById('impDoc').value.trim();
+      if (!/^\d{8}$|^\d{11}$/.test(doc)) return;
+      const $b = document.getElementById('impBusqueda');
+      $b.textContent = 'Buscando nombre…';
+      try {
+        const r = await api(`/api/consulta-doc?numero=${doc}`);
+        document.getElementById('impNombre').value = r.nombre;
+        $b.textContent = `✔ Encontrado (${r.fuente === 'cache' ? 'cliente conocido' : 'consulta en línea'})`;
+        document.querySelectorAll('#impTipo button').forEach((x) => x.classList.toggle('activa', x.dataset.v === (doc.length === 11 ? 'factura' : 'boleta')));
+      } catch {
+        $b.textContent = 'No se encontró: escriba el nombre manualmente.';
+      }
+    };
+    document.getElementById('impDoc').addEventListener('change', buscarNombre);
+    if (a.numDoc && !a.nombre) buscarNombre();
+
+    document.getElementById('impEmitir').onclick = async (ev) => {
+      const boton = ev.target;
+      const $err = document.getElementById('impErr');
+      $err.hidden = true;
+      try {
+        const tipo = document.querySelector('#impTipo button.activa').dataset.v;
+        const rubro = document.querySelector('#impRubro button.activa').dataset.v;
+        const doc = document.getElementById('impDoc').value.trim();
+        const nombre = document.getElementById('impNombre').value.trim();
+        const descr = document.getElementById('impDesc').value.trim();
+        const cantidad = Math.max(1, parseInt(document.getElementById('impCant').value || '1', 10));
+        const montoTotal = montoACentimos(document.getElementById('impMonto').value);
+        if (!descr) throw new Error('Falta la descripción');
+        if (montoTotal === null || montoTotal <= 0) throw new Error('Falta el monto (pregunte al cliente)');
+        let cliente;
+        if (tipo === 'factura') {
+          if (!/^\d{11}$/.test(doc)) throw new Error('La factura necesita RUC de 11 dígitos');
+          if (!nombre) throw new Error('Falta la razón social');
+          cliente = { tipoDoc: '6', numDoc: doc, nombre };
+        } else if (/^\d{8}$/.test(doc)) {
+          cliente = { tipoDoc: '1', numDoc: doc, nombre: nombre || `CLIENTE DNI ${doc}` };
+        } else {
+          cliente = { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
+        }
+        // Reparto exacto: si el total no divide entre la cantidad, va 1 ítem por el total.
+        let cant = cantidad, unit = montoTotal;
+        if (cantidad > 1 && montoTotal % cantidad === 0) unit = montoTotal / cantidad;
+        else cant = 1;
+        boton.disabled = true;
+        boton.textContent = 'Emitiendo…';
+        const res = await api('/api/comprobantes', {
+          method: 'POST',
+          body: JSON.stringify({
+            serie: SERIES[rubro][tipo],
+            cliente,
+            items: [{ descripcion: descr, montoCentimos: unit, cantidad: cant, afectacion: document.getElementById('impIgv').checked ? '10' : '20' }],
+          }),
+        });
+        location.hash = `#ticket/${res.id}`;
+      } catch (e) {
+        $err.textContent = e.message;
+        $err.hidden = false;
+        boton.disabled = false;
+        boton.textContent = 'EMITIR';
+      }
+    };
+  };
+
+  document.getElementById('analizar').onclick = analizar;
+  if (compartido) analizar();
 }
 
 /* ---------- Guía de Remisión Transportista ---------- */
@@ -703,6 +851,7 @@ async function enrutar() {
     else if (hash.startsWith('#emitir/')) vistaEmitir(hash.split('/')[1]);
     else if (hash.startsWith('#ticket/')) await vistaTicket(hash.split('/')[1]);
     else if (hash === '#lista') await vistaLista();
+    else if (hash === '#importar') await vistaImportar();
     else if (hash === '#guia') await vistaGuiaNueva();
     else if (hash === '#guias') await vistaGuias();
     else if (hash === '#reportes') await vistaReportes();
@@ -711,6 +860,17 @@ async function enrutar() {
     if (e.message !== 'Clave incorrecta') {
       $app.innerHTML = `<div class="tarjeta"><p class="error">${esc(e.message)}</p><a class="boton boton-suave" href="#home">Volver</a></div>`;
     }
+  }
+}
+
+// Texto compartido desde WhatsApp (Web Share Target del manifest).
+{
+  const q = new URLSearchParams(location.search);
+  const compartido = [q.get('titulo'), q.get('texto'), q.get('urlcomp')].filter(Boolean).join('\n').trim();
+  if (compartido) {
+    sessionStorage.setItem('importar:texto', compartido);
+    // replaceState no dispara hashchange: la vista se renderiza una sola vez.
+    history.replaceState(null, '', '/#importar');
   }
 }
 

@@ -7,6 +7,11 @@
   "background_color": "#f2f4f7",
   "theme_color": "#006c48",
   "lang": "es-PE",
+  "share_target": {
+    "action": "/",
+    "method": "GET",
+    "params": { "text": "texto", "title": "titulo", "url": "urlcomp" }
+  },
   "icons": [
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]

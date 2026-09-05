@@ -8,6 +8,7 @@ import { generarResumenXml, type BoletaResumen } from './sunat/resumen.js';
 import { generarGuiaTransportistaXml, type GuiaTransportista } from './sunat/gre.js';
 import { consultarGuia, enviarGuia, ENDPOINTS_GRE, obtenerTokenGre } from './sunat/greApi.js';
 import { textoQr } from './sunat/qr.js';
+import { analizarMensaje, repartirMonto } from './parser.js';
 import { fmt } from './sunat/calculo.js';
 
 /**
@@ -38,6 +39,8 @@ export interface Env {
   /** Número de registro MTC del transportista (vacío si no aplica). */
   GRE_REGISTRO_MTC?: string;
   EMPRESA_JSON: string;
+  /** Token opcional de apis.net.pe (v2); sin él se usa la v1 pública. */
+  APIS_TOKEN?: string;
 }
 
 interface NuevoComprobanteBody {
@@ -110,6 +113,54 @@ app.get('/api/yo', (c) => c.json({ ok: true, empresa: empresa(c.env).razonSocial
 app.get('/api/series', async (c) => {
   const { results } = await c.env.DB.prepare('SELECT serie, tipo, rubro FROM series ORDER BY serie').all();
   return c.json(results);
+});
+
+/** Analiza un mensaje de WhatsApp/nota y devuelve los datos detectados. */
+app.post('/api/analizar-mensaje', async (c) => {
+  const { texto } = await c.req.json<{ texto?: string }>().catch(() => ({}) as { texto?: string });
+  if (!texto?.trim()) return c.json({ error: 'Pegue o comparta el mensaje a analizar' }, 400);
+  const a = analizarMensaje(texto);
+  return c.json({ ...a, reparto: repartirMonto(a) });
+});
+
+/**
+ * Consulta la razón social / nombre por RUC (11 dígitos) o DNI (8), con caché
+ * en D1 para no depender del servicio externo en clientes repetidos.
+ */
+app.get('/api/consulta-doc', async (c) => {
+  const numero = (c.req.query('numero') ?? '').trim();
+  const tipo = numero.length === 11 ? 'ruc' : numero.length === 8 ? 'dni' : null;
+  if (!tipo || !/^\d+$/.test(numero)) {
+    return c.json({ error: 'El número debe ser un DNI (8 dígitos) o RUC (11 dígitos)' }, 400);
+  }
+
+  const cacheado = await c.env.DB.prepare('SELECT nombre, direccion FROM entidades WHERE num_doc = ?')
+    .bind(numero)
+    .first<{ nombre: string; direccion: string | null }>();
+  if (cacheado) return c.json({ numero, nombre: cacheado.nombre, direccion: cacheado.direccion, fuente: 'cache' });
+
+  try {
+    const cab: Record<string, string> = { Accept: 'application/json' };
+    let url = `https://api.apis.net.pe/v1/${tipo}?numero=${numero}`;
+    if (c.env.APIS_TOKEN) {
+      url = `https://api.apis.net.pe/v2/${tipo}?numero=${numero}`;
+      cab['Authorization'] = `Bearer ${c.env.APIS_TOKEN}`;
+    }
+    const res = await fetch(url, { headers: cab });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = (await res.json()) as { nombre?: string; nombreCompleto?: string; razonSocial?: string; direccion?: string };
+    const nombre = d.nombre ?? d.razonSocial ?? d.nombreCompleto;
+    if (!nombre) throw new Error('sin nombre en la respuesta');
+    await c.env.DB.prepare(
+      "INSERT INTO entidades (num_doc, tipo_doc, nombre, direccion, fuente) VALUES (?, ?, ?, ?, 'apis.net.pe') ON CONFLICT(num_doc) DO NOTHING",
+    )
+      .bind(numero, tipo === 'ruc' ? '6' : '1', nombre, d.direccion ?? null)
+      .run();
+    return c.json({ numero, nombre, direccion: d.direccion ?? null, fuente: 'apis.net.pe' });
+  } catch {
+    // El servicio externo falló o no conoce el documento: se escribe a mano.
+    return c.json({ numero, nombre: null, error: 'No se pudo consultar; escriba el nombre manualmente' }, 404);
+  }
 });
 
 app.post('/api/comprobantes', async (c) => {
