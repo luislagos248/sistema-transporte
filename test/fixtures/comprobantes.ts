@@ -4,7 +4,7 @@ import type { Comprobante, Empresa } from '../../src/sunat/types.js';
 export const EMPRESA_PRUEBA: Empresa = {
   ruc: '20000000001',
   razonSocial: 'EMPRESA DE PRUEBA S.A.C.',
-  nombreComercial: 'Tourismo Irasola (pruebas)',
+  nombreComercial: 'Turismo Irazola (pruebas)',
   ubigeo: '250101',
   departamento: 'UCAYALI',
   provincia: 'CORONEL PORTILLO',

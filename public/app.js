@@ -1,4 +1,4 @@
-/* Tourismo Irasola — PWA de facturación (vanilla JS, sin build). */
+/* Turismo Irazola — PWA de facturación (vanilla JS, sin build). */
 
 const $app = document.getElementById('app');
 const $cabecera = document.getElementById('cabecera');
@@ -90,7 +90,7 @@ function vistaLogin() {
   $cabecera.hidden = true;
   $app.innerHTML = `
     <div class="tarjeta" style="max-width:420px;margin:40px auto">
-      <h1>🚌 Tourismo Irasola</h1>
+      <h1>🚌 Turismo Irazola</h1>
       <p>Sistema de facturación</p>
       <label for="clave">Clave de acceso</label>
       <input id="clave" type="password" autocomplete="current-password" inputmode="numeric">

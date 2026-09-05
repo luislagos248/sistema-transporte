@@ -1,6 +1,6 @@
-# Plan del Proyecto — Sistema de Facturación Tourismo Irasola
+# Plan del Proyecto — Sistema de Facturación Turismo Irazola
 
-**Empresa:** Tourismo Irasola (un solo RUC, dos rubros)
+**Empresa:** Turismo Irazola (un solo RUC, dos rubros)
 - **Rubro 1 — Transporte:** pasajes (ruta Pucallpa ↔ km 86 San Alejandro), encomiendas/carga, y servicios contratados puntuales (Huánuco, Tingo María, etc.). Flota propia + carros de terceros inscritos en la empresa.
 - **Rubro 2 — Hospedaje:** alquiler de habitaciones / estadías.
 
@@ -41,7 +41,7 @@ En esta modalidad:
 
 Elegida para cumplir "sin dominio, sin VPS, gratis y confiable":
 
-- **Cloudflare Pages + Workers (plan gratuito, uso comercial permitido)** — la aplicación vive en un subdominio gratuito (`irasola.pages.dev`); el plan gratuito aguanta de sobra 800 comprobantes/mes (límite: 100 000 solicitudes/día).
+- **Cloudflare Pages + Workers (plan gratuito, uso comercial permitido)** — la aplicación vive en un subdominio gratuito (`irazola-facturacion.….workers.dev`); el plan gratuito aguanta de sobra 800 comprobantes/mes (límite: 100 000 solicitudes/día).
 - **Base de datos: Cloudflare D1** (SQLite gestionado, gratis hasta 5 GB — décadas de comprobantes).
 - **Archivos XML/CDR/PDF: Cloudflare R2** (10 GB gratis).
 - **Tareas programadas (Cron Triggers)**: envío del resumen diario de boletas cada noche y reintentos automáticos de envíos pendientes.

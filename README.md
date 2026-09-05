@@ -1,4 +1,4 @@
-# Tourismo Irasola — Sistema de Facturación
+# Turismo Irazola — Sistema de Facturación
 
 Sistema de facturación electrónica **SEE-Del Contribuyente (SUNAT)** para los
 dos rubros de la empresa (transporte y hospedaje), pensado para emitir desde
@@ -98,12 +98,12 @@ SUNAT_BETA=1 npx vitest run test/sunat-beta.integration.test.ts  # contra SUNAT 
 ## Despliegue (resumen)
 
 Ya desplegado en el plan gratuito de Cloudflare (modo prueba contra SUNAT
-beta): **https://irasola-facturacion.luisslagos08.workers.dev**
+beta): **https://irazola-facturacion.luisslagos08.workers.dev**
 
 Los archivos (XML/CDR) viven en la tabla `archivos` de D1 — no se usa R2,
 que exige registrar tarjeta. Para reproducir el despliegue:
 
-1. `npx wrangler d1 create irasola-facturacion` (copiar el `database_id` a `wrangler.toml`).
+1. `npx wrangler d1 create irasola-facturacion` — nombre interno histórico de la base; debe coincidir con `database_name` en `wrangler.toml` (copiar el `database_id`).
 2. `npx wrangler d1 migrations apply irasola-facturacion --remote`
 3. `npx wrangler deploy`
 4. Secrets: `npx wrangler secret put APP_CLAVE | SOL_USUARIO | SOL_CLAVE | CERT_PEM | CERT_KEY | GRE_CLIENT_ID | GRE_CLIENT_SECRET`

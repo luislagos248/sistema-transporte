@@ -2,7 +2,7 @@
 # Despliegue: npx wrangler deploy   (requiere: wrangler d1 create / r2 bucket create
 # y los secrets: CERT_PEM, CERT_KEY, SOL_USUARIO, SOL_CLAVE)
 
-name = "irasola-facturacion"
+name = "irazola-facturacion"
 main = "src/worker.ts"
 compatibility_date = "2026-08-01"
 # xml-crypto usa node:crypto; nodejs_compat lo habilita en Workers.
@@ -25,7 +25,7 @@ GRE_AMBIENTE = "prueba"
 # Número de registro MTC del transportista (vacío si no aplica).
 GRE_REGISTRO_MTC = ""
 # Datos del emisor. En producción se reemplaza por los datos reales del RUC.
-EMPRESA_JSON = '{"ruc":"20000000001","razonSocial":"EMPRESA DE PRUEBA S.A.C.","nombreComercial":"Tourismo Irasola","ubigeo":"250101","departamento":"UCAYALI","provincia":"CORONEL PORTILLO","distrito":"CALLERIA","direccion":"JR. DE PRUEBA NRO. 123"}'
+EMPRESA_JSON = '{"ruc":"20000000001","razonSocial":"TURISMO IRAZOLA S.A.C.","nombreComercial":"Turismo Irazola","ubigeo":"250101","departamento":"UCAYALI","provincia":"CORONEL PORTILLO","distrito":"CALLERIA","direccion":"JR. DE PRUEBA NRO. 123"}'
 
 [[d1_databases]]
 binding = "DB"
