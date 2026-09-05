@@ -90,6 +90,20 @@ describe('analizador de mensajes de WhatsApp', () => {
     expect(a.descripcion).toMatch(/hospedaje del 03\/08 al 05\/08/i);
   });
 
+  it('"total 150" es el total aunque haya cantidad', () => {
+    const a = analizarMensaje('3 pasajes pucallpa san alejandro total 150');
+    expect(a.items[0]!.montoEsTotalExplicito).toBe(true);
+    expect(a.items[0]!.montoTotalCentimos).toBe(15000);
+    expect(repartirMonto(a.items[0]!)).toEqual({ cantidad: 3, precioUnitarioCentimos: 5000 });
+  });
+
+  it('el total explícito no se contagia del "por unidad" de otra línea', () => {
+    const a = analizarMensaje('2 pasajes ida a 150\n3 pasajes vuelta total 150');
+    expect(a.items[0]!.montoTotalCentimos).toBe(30000); // 2 × 150
+    expect(a.items[1]!.montoEsTotalExplicito).toBe(true);
+    expect(a.items[1]!.montoTotalCentimos).toBe(15000); // total dicho: 150
+  });
+
   it('cada línea es un producto distinto (caso real de ida y vuelta)', () => {
     const a = analizarMensaje('10729755520 3 pasajes pucallpa san alejandro a 50\n2 pasajes san alejandro pucallpa 50');
     expect(a.tipoDoc).toBe('6'); // RUC de persona natural (empieza en 10)

@@ -16,6 +16,8 @@ export interface ItemAnalizado {
   montoTotalCentimos?: number;
   /** true si el monto se dijo por unidad ("a 50", "50 por día/cada uno"). */
   montoPorUnidad?: boolean;
+  /** true si dijeron explícitamente que es el total ("total 150", "son 150"). */
+  montoEsTotalExplicito?: boolean;
   /** Rango de fechas ("del 3 al 5 de agosto"), en YYYY-MM-DD. */
   fechas?: { desde: string; hasta: string; dias: number };
   /** 'monto' | 'descripcion' que falten en este ítem. */
@@ -118,7 +120,11 @@ function analizarItem(lineaCruda: string): ItemAnalizado {
     const idx = texto.indexOf(elegido.texto);
     const antes = texto.slice(Math.max(0, idx - 12), idx);
     const despues = texto.slice(idx + elegido.texto.length, idx + elegido.texto.length + 22);
+    // "total 150", "son 150", "150 en total": es el total, dicho con todas sus letras.
+    out.montoEsTotalExplicito =
+      /\b(total|son|hacen?)\s*[:.]?\s*$/i.test(antes) || /^\s*en\s+total\b/i.test(despues);
     out.montoPorUnidad =
+      !out.montoEsTotalExplicito &&
       out.cantidad > 1 &&
       (/\ba\s*$/i.test(antes) || /^\s*(por|cada)\b/i.test(despues) || /\b(por\s+(d[ií]a|noche|pasaje|persona|unidad)|cada\s+un[oa])\b/i.test(despues));
     out.montoTotalCentimos = out.montoPorUnidad ? elegido.valor * out.cantidad : elegido.valor;
@@ -208,7 +214,7 @@ export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
   //    número suelto también son por unidad ("3 pasajes a 50 / 2 pasajes 50").
   const unitarios = items.filter((it) => it.montoPorUnidad);
   for (const it of items) {
-    if (it.montoPorUnidad || !it.montoTotalCentimos || it.cantidad <= 1) continue;
+    if (it.montoPorUnidad || it.montoEsTotalExplicito || !it.montoTotalCentimos || it.cantidad <= 1) continue;
     if (unitarios.some((u) => u.montoTotalCentimos! / u.cantidad === it.montoTotalCentimos)) {
       it.montoPorUnidad = true;
       it.montoTotalCentimos = it.montoTotalCentimos * it.cantidad;
