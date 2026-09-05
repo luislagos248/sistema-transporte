@@ -282,12 +282,15 @@ function pasoCabecera(n, titulo, idAtras) {
 function clienteDeEstado(estado) {
   const doc = (estado.doc || '').trim();
   const nombre = (estado.nombre || '').trim();
+  const direccion = (estado.direccion || '').trim();
   if (estado.tipo === 'factura') {
     if (!/^\d{11}$/.test(doc)) throw new Error('La factura necesita el RUC (11 dígitos)');
     if (!nombre) throw new Error('Falta la razón social (se busca sola al poner el RUC)');
-    return { tipoDoc: '6', numDoc: doc, nombre };
+    return { tipoDoc: '6', numDoc: doc, nombre, ...(direccion ? { direccion } : {}) };
   }
-  if (/^\d{8}$/.test(doc)) return { tipoDoc: '1', numDoc: doc, nombre: nombre || `CLIENTE DNI ${doc}` };
+  if (/^\d{8}$/.test(doc)) {
+    return { tipoDoc: '1', numDoc: doc, nombre: nombre || `CLIENTE DNI ${doc}`, ...(direccion ? { direccion } : {}) };
+  }
   if (doc) throw new Error('El documento debe ser DNI (8 dígitos) o RUC (11)');
   return { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
 }
@@ -321,6 +324,7 @@ function pasoCliente(estado, nav) {
   $('p1Atras').onclick = nav.alAtras;
 
   let nombreAuto = ''; // lo halló la consulta: no se escribe encima
+  let direccionAuto = '';
   let ultimaConsulta = '';
 
   const pintaPista = () => {
@@ -351,13 +355,16 @@ function pasoCliente(estado, nav) {
       const r = await api(`/api/consulta-doc?numero=${doc}`);
       if ($('p1Doc')?.value !== doc) return; // ya cambió el número o se salió
       nombreAuto = r.nombre;
+      direccionAuto = r.direccion || '';
       $('p1Resultado').innerHTML = `
         <div class="cliente-hallado">✔ <b>${esc(r.nombre)}</b>
+        ${direccionAuto ? `<span>${esc(direccionAuto)}</span>` : ''}
         <span>${r.fuente === 'cache' ? 'Cliente conocido' : 'Consulta en línea'}</span></div>`;
       if (doc.length === 11) marcarFactura();
     } catch {
       if ($('p1Doc')?.value !== doc) return;
       nombreAuto = '';
+      direccionAuto = '';
       $('p1Resultado').innerHTML = '<p class="ayuda">No se encontró el nombre: escríbalo usted.</p>';
       $('p1Manual').hidden = false;
       $('p1Nombre').focus();
@@ -372,6 +379,7 @@ function pasoCliente(estado, nav) {
       buscar(doc);
     } else {
       nombreAuto = '';
+      direccionAuto = '';
       ultimaConsulta = '';
       $('p1Resultado').innerHTML = '';
       $('p1Manual').hidden = true;
@@ -382,6 +390,7 @@ function pasoCliente(estado, nav) {
   $('p1Seguir').onclick = () => {
     estado.doc = $('p1Doc').value.trim();
     estado.nombre = nombreAuto || $('p1Nombre').value.trim();
+    estado.direccion = nombreAuto ? direccionAuto : '';
     try {
       clienteDeEstado(estado); // solo valida; si algo falta, lo explica
       estado.faltaDoc = false;
@@ -885,32 +894,31 @@ function generarPdfTicket(d, emp) {
   dato('Fecha', `${d.fecha_emision}   ${d.hora_emision}`);
   dato('Cliente', d.cliente_nombre);
   if (d.cliente_num_doc !== '-') dato(d.cliente_tipo_doc === '6' ? 'RUC' : 'DNI', d.cliente_num_doc);
+  if (d.cliente_direccion) dato('Dirección', d.cliente_direccion);
   if (d.referencia) {
     dato('Modifica', `${d.referencia.tipo === '01' ? 'FACTURA' : 'BOLETA'} ${d.referencia.serie}-${d.referencia.correlativo}`);
     if (d.motivo_nota) dato('Motivo', d.motivo_nota);
   }
   y += 0.8;
 
-  // --- Tabla de productos ---
-  fuente(6.5, true, true);
+  // --- Tabla de productos: CANT | DESCRIPCIÓN | P. UNIT | IMPORTE (en S/) ---
+  const X_DESC = M + 9;
+  const X_PU = W - M - 15;
+  fuente(6.3, true, true);
   doc.text('CANT.', M, y);
-  doc.text('DESCRIPCIÓN', M + 11, y);
+  doc.text('DESCRIPCIÓN', X_DESC, y);
+  doc.text('P. UNIT', X_PU, y, { align: 'right' });
   doc.text('IMPORTE', W - M, y, { align: 'right' });
   y += 1.8;
   linea(150, 0.3);
   for (const it of items) {
-    fuente(7.8);
-    const lineasDesc = doc.splitTextToSize(String(it.descripcion), ancho - 27);
+    fuente(7.6);
+    const lineasDesc = doc.splitTextToSize(String(it.descripcion), X_PU - X_DESC - 12);
     doc.text(String(it.cantidad), M + 2.5, y, { align: 'center' });
-    doc.text(lineasDesc, M + 11, y);
-    doc.text(S(Math.round(it.precio_unitario * it.cantidad)), W - M, y, { align: 'right' });
-    y += lineasDesc.length * 3.4;
-    if (it.cantidad !== 1) {
-      fuente(6.4, false, true);
-      doc.text(`${it.cantidad} × S/ ${(it.precio_unitario / 100).toFixed(2)} c/u`, M + 11, y);
-      y += 3;
-    }
-    y += 1.1;
+    doc.text(lineasDesc, X_DESC, y);
+    doc.text((it.precio_unitario / 100).toFixed(2), X_PU, y, { align: 'right' });
+    doc.text((Math.round(it.precio_unitario * it.cantidad) / 100).toFixed(2), W - M, y, { align: 'right' });
+    y += lineasDesc.length * 3.4 + 1.1;
   }
   linea(150, 0.3);
 
@@ -996,6 +1004,7 @@ async function vistaTicket(id) {
       <div class="linea"><span>Fecha:</span><span>${d.fecha_emision} ${d.hora_emision}</span></div>
       <div class="linea"><span>Cliente:</span><span>${esc(d.cliente_nombre)}</span></div>
       ${d.cliente_num_doc !== '-' ? `<div class="linea"><span>Doc:</span><span>${esc(d.cliente_num_doc)}</span></div>` : ''}
+      ${d.cliente_direccion ? `<div class="linea"><span>Dirección:</span><span>${esc(d.cliente_direccion)}</span></div>` : ''}
       <hr>
       ${d.items.map((it) => `
         <div class="linea"><span>${esc(it.descripcion)}${it.cantidad !== 1 ? ` x${it.cantidad}` : ''}</span>

@@ -442,13 +442,13 @@ app.post('/api/comprobantes', async (c) => {
 
   const ins = await c.env.DB.prepare(
     `INSERT INTO comprobantes (tipo, serie, correlativo, fecha_emision, hora_emision, moneda,
-       cliente_tipo_doc, cliente_num_doc, cliente_nombre,
+       cliente_tipo_doc, cliente_num_doc, cliente_nombre, cliente_direccion,
        total_gravado, total_exonerado, total_inafecto, total_igv, total, leyenda, hash_firma, xml_key)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   )
     .bind(
       cpe.tipo, cpe.serie, cpe.correlativo, fecha, hora, cpe.moneda,
-      cpe.cliente.tipoDoc, cpe.cliente.numDoc, cpe.cliente.nombre,
+      cpe.cliente.tipoDoc, cpe.cliente.numDoc, cpe.cliente.nombre, cpe.cliente.direccion?.trim().slice(0, 200) || null,
       g.totales.gravado, g.totales.exonerado, g.totales.inafecto, g.totales.igv, g.totales.total,
       g.leyenda, extraerDigest(firmado), xmlKey,
     )
@@ -545,6 +545,7 @@ app.post('/api/comprobantes/:id/nota-credito', async (c) => {
       tipoDoc: String(orig.cliente_tipo_doc) as TipoDocIdentidad,
       numDoc: String(orig.cliente_num_doc),
       nombre: String(orig.cliente_nombre),
+      ...(orig.cliente_direccion ? { direccion: String(orig.cliente_direccion) } : {}),
     },
     items: itemsOrig.map((it) => ({
       descripcion: String(it.descripcion),
@@ -574,13 +575,14 @@ app.post('/api/comprobantes/:id/nota-credito', async (c) => {
   const ins = await c.env.DB.prepare(
     `INSERT INTO comprobantes (tipo, serie, correlativo, fecha_emision, hora_emision, moneda,
        cliente_tipo_doc, cliente_num_doc, cliente_nombre,
+       cliente_direccion,
        total_gravado, total_exonerado, total_inafecto, total_igv, total, leyenda, hash_firma, xml_key,
        referencia_id, motivo_nota)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   )
     .bind(
       '07', serieNc, nc.correlativo, fecha, hora, nc.moneda,
-      nc.cliente.tipoDoc, nc.cliente.numDoc, nc.cliente.nombre,
+      nc.cliente.tipoDoc, nc.cliente.numDoc, nc.cliente.nombre, nc.cliente.direccion ?? null,
       g.totales.gravado, g.totales.exonerado, g.totales.inafecto, g.totales.igv, g.totales.total,
       g.leyenda, extraerDigest(firmado), xmlKey,
       id, `${motivoCodigo} - ${motivoDescripcion}`,
