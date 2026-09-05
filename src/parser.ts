@@ -98,7 +98,12 @@ function analizarItem(lineaCruda: string): ItemAnalizado {
     const cant = texto.match(PALABRAS_CANTIDAD) ?? texto.match(/\bx\s?(\d{1,3})\b/i);
     if (cant) {
       const n = parseInt(cant[1]!, 10);
-      if (n >= 1 && n <= 200) out.cantidad = n;
+      if (n >= 1 && n <= 200) {
+        out.cantidad = n;
+        // La cantidad va en su propia casilla, no en la descripción:
+        // "3 pasajes ..." -> "pasajes ..." (se conserva la palabra, no el número).
+        texto = texto.replace(cant[0], cant[2] ? ` ${cant[2]} ` : ' ');
+      }
     }
   }
 

@@ -28,6 +28,11 @@ GRE_REGISTRO_MTC = ""
 # Datos del emisor. En producción se reemplaza por los datos reales del RUC.
 EMPRESA_JSON = '{"ruc":"20000000001","razonSocial":"TURISMO IRAZOLA S.A.C.","nombreComercial":"Turismo Irazola","ubigeo":"250101","departamento":"UCAYALI","provincia":"CORONEL PORTILLO","distrito":"CALLERIA","direccion":"JR. DE PRUEBA NRO. 123"}'
 
+# Workers AI (capa gratuita diaria): modelo de visión para el escaneo asistido
+# de notas en papel (OCR). No requiere tarjeta.
+[ai]
+binding = "AI"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "irasola-facturacion"

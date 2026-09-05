@@ -143,169 +143,395 @@ async function vistaHome() {
   }
 }
 
-/* ---------- Importar mensaje de WhatsApp ---------- */
+/* ---------- Importar mensaje de WhatsApp / escanear papel ---------- */
 
 async function vistaImportar() {
+  // 'importar:texto' llega del botón Compartir de WhatsApp y se analiza solo;
+  // 'importar:borrador' solo rellena el recuadro (al volver atrás o tras un error).
   const compartido = sessionStorage.getItem('importar:texto') || '';
+  const borrador = sessionStorage.getItem('importar:borrador') || '';
   sessionStorage.removeItem('importar:texto');
+  sessionStorage.removeItem('importar:borrador');
+  const errorPrevio = sessionStorage.getItem('importar:error') || '';
+  sessionStorage.removeItem('importar:error');
 
   $app.innerHTML = `
     <h1>📥 Importar mensaje</h1>
-    <div class="dos-columnas">
-    <div>
-    <div class="tarjeta">
+    <div class="tarjeta" style="max-width:560px">
+      ${errorPrevio ? `<p class="error">${esc(errorPrevio)}</p>` : ''}
       <label for="txtMsg">Mensaje de WhatsApp o nota</label>
-      <textarea id="txtMsg" rows="7" style="width:100%;font:inherit;padding:14px;border:1.5px solid transparent;border-radius:12px;background:var(--campo);resize:vertical">${esc(compartido)}</textarea>
-      <p class="ayuda">Desde WhatsApp: mantenga presionado el mensaje → Compartir → <b>Turismo Irazola</b> (con la app instalada desde Chrome). También puede copiar y pegar aquí. Cada línea del mensaje es un producto distinto; si mandaron varios mensajes, péguelos todos juntos.</p>
+      <textarea id="txtMsg" rows="7" style="width:100%;font:inherit;padding:14px;border:1.5px solid transparent;border-radius:12px;background:var(--campo);resize:vertical">${esc(compartido || borrador)}</textarea>
+      <p class="ayuda">Desde WhatsApp: mantenga presionado el mensaje → Compartir → <b>Turismo Irazola</b> (con la app instalada desde Chrome). También puede copiar y pegar aquí. Cada línea del mensaje es un producto distinto.</p>
+      <p class="error" id="impErrEntrada" hidden></p>
       <br>
       <button class="boton-grande" id="analizar">🔍 Analizar mensaje</button>
-    </div>
-    </div>
-    <div id="resultado"></div>
+      <button class="boton-suave" id="btnEscanear" style="width:100%;margin-top:10px">📷 Escanear papel (tomar foto)</button>
+      <input type="file" id="fotoNota" accept="image/*" capture="environment" hidden>
+      <p class="ayuda">Si le dejaron una nota en papel, tómele foto: el sistema la lee y le muestra todo por pasos para revisarlo antes de emitir.</p>
     </div>`;
 
-  const $res = document.getElementById('resultado');
-
-  const filaItem = (it, i) => {
-    const marca = (cond) => (cond ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : '');
-    const r = it && it.reparto ? it.reparto : { cantidad: (it && it.cantidad) || 1, precioUnitarioCentimos: null };
-    const falta = (c) => it && it.faltantes && it.faltantes.includes(c);
-    return `
-      <div class="item-import" data-i="${i}" style="border-top:1.5px dashed var(--linea);padding-top:12px;margin-top:12px">
-        <label>Producto ${i + 1} — descripción</label>
-        <input id="impDesc_${i}" value="${esc((it && it.descripcion) || '')}" ${marca(falta('descripcion'))}>
-        <div class="fila">
-          <div><label>Cantidad</label><input id="impCant_${i}" inputmode="numeric" value="${r.cantidad}"></div>
-          <div><label>Precio c/u (S/)</label><input id="impMonto_${i}" class="monto" inputmode="decimal" value="${r.precioUnitarioCentimos ? (r.precioUnitarioCentimos / 100).toFixed(2) : ''}" ${marca(falta('monto'))}></div>
-        </div>
-      </div>`;
+  const cargando = (msg) => {
+    window.scrollTo(0, 0);
+    $app.innerHTML = `<div class="tarjeta" style="max-width:560px;text-align:center;padding:44px 20px">
+      <p style="font-size:1.15rem;margin:0 0 6px">${msg}</p>
+      <p class="ayuda" style="margin:0">Un momento…</p></div>`;
+  };
+  const volverConError = (texto, mensaje) => {
+    sessionStorage.setItem('importar:borrador', texto);
+    sessionStorage.setItem('importar:error', mensaje);
+    vistaImportar();
   };
 
-  const analizar = async () => {
-    const texto = document.getElementById('txtMsg').value.trim();
-    if (!texto) { $res.innerHTML = '<div class="tarjeta"><p class="error">Pegue o comparta primero el mensaje.</p></div>'; return; }
-    $res.innerHTML = '<div class="tarjeta"><p class="ayuda">Analizando…</p></div>';
+  // Analiza el texto y SALTA a los pasos de confirmación (pantallas nuevas,
+  // nada se carga "abajo": la señora siempre ve una sola cosa a la vez).
+  const analizarTexto = async (texto) => {
+    cargando('🔍 Leyendo el mensaje…');
     let a;
-    try { a = await api('/api/analizar-mensaje', { method: 'POST', body: JSON.stringify({ texto }) }); }
-    catch (e) { $res.innerHTML = `<div class="tarjeta"><p class="error">${esc(e.message)}</p></div>`; return; }
-
-    const faltaDoc = a.faltantes.includes('documento');
-    const hayFaltantes = faltaDoc || a.items.some((it) => it.faltantes.length);
-    const tipoCpe = a.tipoDoc === '6' ? 'factura' : 'boleta';
-
-    $res.innerHTML = `
-    <div class="tarjeta">
-      <h2 style="margin-top:0">Datos detectados · ${a.items.length} producto${a.items.length === 1 ? '' : 's'}</h2>
-      ${hayFaltantes ? '<p class="error">Hay datos por confirmar (marcados en ámbar). Pregunte al cliente y complete.</p>' : '<p class="ayuda">Revise que todo esté correcto y emita.</p>'}
-      ${a.avisos.map((v) => `<p class="ayuda">ℹ️ ${esc(v)}</p>`).join('')}
-
-      <div class="conmutador" id="impTipo">
-        <button data-v="boleta" class="${tipoCpe === 'boleta' ? 'activa' : ''}">BOLETA</button>
-        <button data-v="factura" class="${tipoCpe === 'factura' ? 'activa' : ''}">FACTURA</button>
-      </div>
-      <div class="conmutador" id="impRubro" style="margin-top:8px">
-        <button data-v="transporte" class="activa">TRANSPORTE</button>
-        <button data-v="hospedaje">HOSPEDAJE</button>
-      </div>
-
-      <label>DNI o RUC del cliente</label>
-      <input id="impDoc" inputmode="numeric" maxlength="11" value="${esc(a.numDoc || '')}" ${faltaDoc ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : ''}>
-      <label>Nombre / Razón social</label>
-      <input id="impNombre" value="${esc(a.nombre || '')}" placeholder="Se busca solo al poner el documento">
-      <p class="ayuda" id="impBusqueda"></p>
-
-      <div id="impItems">${a.items.map((it, i) => filaItem(it, i)).join('')}</div>
-      <button class="boton-suave" id="impMasItem" style="width:100%;margin-top:10px">➕ Agregar otro producto</button>
-
-      <label style="margin-top:14px"><input type="checkbox" id="impIgv" style="width:auto"> Operación con IGV (18%)</label>
-      <p class="error" id="impErr" hidden></p>
-      <br>
-      <button class="boton-grande" id="impEmitir">EMITIR</button>
-    </div>`;
-
-    const seg = (id) => {
-      document.querySelectorAll(`#${id} button`).forEach((b) => {
-        b.onclick = () => document.querySelectorAll(`#${id} button`).forEach((x) => x.classList.toggle('activa', x === b));
-      });
+    try {
+      a = await api('/api/analizar-mensaje', { method: 'POST', body: JSON.stringify({ texto }) });
+    } catch (e) {
+      volverConError(texto, e.message);
+      return;
+    }
+    const estado = {
+      origen: 'importar',
+      tipo: a.tipoDoc === '6' ? 'factura' : 'boleta',
+      doc: a.numDoc || '',
+      nombre: a.nombre || '',
+      faltaDoc: a.faltantes.includes('documento'),
+      rubro: 'transporte',
+      igv: false,
+      avisos: a.avisos || [],
+      items: a.items.map((it) => ({
+        descripcion: it.descripcion || '',
+        cantidad: it.reparto ? it.reparto.cantidad : it.cantidad || 1,
+        precioCentimos: it.reparto ? it.reparto.precioUnitarioCentimos : null,
+        faltantes: it.faltantes || [],
+      })),
     };
-    seg('impTipo');
-    seg('impRubro');
-
-    let numItems = a.items.length;
-    document.getElementById('impMasItem').onclick = () => {
-      document.getElementById('impItems').insertAdjacentHTML('beforeend', filaItem(null, numItems));
-      numItems++;
-    };
-
-    const buscarNombre = async () => {
-      const doc = document.getElementById('impDoc').value.trim();
-      if (!/^\d{8}$|^\d{11}$/.test(doc)) return;
-      const $b = document.getElementById('impBusqueda');
-      $b.textContent = 'Buscando nombre…';
-      try {
-        const r = await api(`/api/consulta-doc?numero=${doc}`);
-        document.getElementById('impNombre').value = r.nombre;
-        $b.textContent = `✔ Encontrado (${r.fuente === 'cache' ? 'cliente conocido' : 'consulta en línea'})`;
-        document.querySelectorAll('#impTipo button').forEach((x) => x.classList.toggle('activa', x.dataset.v === (doc.length === 11 ? 'factura' : 'boleta')));
-      } catch {
-        $b.textContent = 'No se encontró: escriba el nombre manualmente.';
-      }
-    };
-    document.getElementById('impDoc').addEventListener('change', buscarNombre);
-    if (a.numDoc && !a.nombre) buscarNombre();
-
-    document.getElementById('impEmitir').onclick = async (ev) => {
-      const boton = ev.target;
-      const $err = document.getElementById('impErr');
-      $err.hidden = true;
-      try {
-        const tipo = document.querySelector('#impTipo button.activa').dataset.v;
-        const rubro = document.querySelector('#impRubro button.activa').dataset.v;
-        const doc = document.getElementById('impDoc').value.trim();
-        const nombre = document.getElementById('impNombre').value.trim();
-
-        const itemsEmitir = [];
-        for (let i = 0; i < numItems; i++) {
-          const el = document.getElementById(`impDesc_${i}`);
-          if (!el) continue;
-          const descr = el.value.trim();
-          const monto = montoACentimos(document.getElementById(`impMonto_${i}`).value);
-          const cant = Math.max(1, parseInt(document.getElementById(`impCant_${i}`).value || '1', 10));
-          if (!descr && monto === null) continue; // fila vacía agregada de más
-          if (!descr) throw new Error(`Falta la descripción del producto ${i + 1}`);
-          if (monto === null || monto <= 0) throw new Error(`Falta el precio del producto ${i + 1} (pregunte al cliente)`);
-          itemsEmitir.push({ descripcion: descr, montoCentimos: monto, cantidad: cant, afectacion: document.getElementById('impIgv').checked ? '10' : '20' });
-        }
-        if (!itemsEmitir.length) throw new Error('No hay productos para emitir');
-
-        let cliente;
-        if (tipo === 'factura') {
-          if (!/^\d{11}$/.test(doc)) throw new Error('La factura necesita RUC de 11 dígitos');
-          if (!nombre) throw new Error('Falta la razón social');
-          cliente = { tipoDoc: '6', numDoc: doc, nombre };
-        } else if (/^\d{8}$/.test(doc)) {
-          cliente = { tipoDoc: '1', numDoc: doc, nombre: nombre || `CLIENTE DNI ${doc}` };
-        } else {
-          cliente = { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
-        }
-        boton.disabled = true;
-        boton.textContent = 'Emitiendo…';
-        const res = await api('/api/comprobantes', {
-          method: 'POST',
-          body: JSON.stringify({ serie: SERIES[rubro][tipo], cliente, items: itemsEmitir }),
-        });
-        location.hash = `#ticket/${res.id}`;
-      } catch (e) {
-        $err.textContent = e.message;
-        $err.hidden = false;
-        boton.disabled = false;
-        boton.textContent = 'EMITIR';
-      }
-    };
+    const p1 = () => pasoCliente(estado, {
+      alAtras: () => { sessionStorage.setItem('importar:borrador', texto); vistaImportar(); },
+      alContinuar: () => p2(),
+    });
+    const p2 = () => pasoDetalleImportar(estado, { alAtras: p1, alContinuar: () => p3() });
+    const p3 = () => pasoResumen(estado, { alAtras: p2 });
+    p1();
   };
 
-  document.getElementById('analizar').onclick = analizar;
-  if (compartido) analizar();
+  document.getElementById('analizar').onclick = () => {
+    const texto = document.getElementById('txtMsg').value.trim();
+    if (!texto) {
+      const $e = document.getElementById('impErrEntrada');
+      $e.textContent = 'Pegue o comparta primero el mensaje.';
+      $e.hidden = false;
+      return;
+    }
+    analizarTexto(texto);
+  };
+
+  // Escaneo asistido: foto → OCR en el servidor → mismos pasos de confirmación.
+  const $foto = document.getElementById('fotoNota');
+  document.getElementById('btnEscanear').onclick = () => $foto.click();
+  $foto.onchange = async () => {
+    const archivo = $foto.files && $foto.files[0];
+    $foto.value = '';
+    if (!archivo) return;
+    cargando('📷 Leyendo la foto…');
+    try {
+      const imagen = await reducirFoto(archivo);
+      const r = await api('/api/ocr', { method: 'POST', body: JSON.stringify({ imagen }) });
+      await analizarTexto(r.texto);
+    } catch (e) {
+      volverConError('', `No se pudo leer la foto (${e.message}). Pruebe con más luz y el papel plano, o escriba la nota en el recuadro.`);
+    }
+  };
+
+  if (compartido) analizarTexto(compartido);
+}
+
+/* ---------- Asistente por pasos (compartido: manual, WhatsApp y OCR) ----------
+   Paso 1: ¿boleta o factura? ¿para quién?
+   Paso 2: el detalle (productos, cantidades, precios).
+   Paso 3: resumen grande y EMITIR.
+   Cada paso REEMPLAZA la pantalla (nunca se agrega contenido abajo). */
+
+function pasoCabecera(n, titulo, idAtras) {
+  return `
+    <div class="paso-cab">
+      <button type="button" class="paso-atras" id="${idAtras}">← Atrás</button>
+      <div class="paso-num">Paso ${n} de 3</div>
+    </div>
+    <div class="paso-barra"><div style="width:${Math.round((n / 3) * 100)}%"></div></div>
+    <h1 style="margin-top:12px">${titulo}</h1>`;
+}
+
+/** Construye el cliente para la API a partir del estado; valida y explica. */
+function clienteDeEstado(estado) {
+  const doc = (estado.doc || '').trim();
+  const nombre = (estado.nombre || '').trim();
+  if (estado.tipo === 'factura') {
+    if (!/^\d{11}$/.test(doc)) throw new Error('La factura necesita el RUC (11 dígitos)');
+    if (!nombre) throw new Error('Falta la razón social (se busca sola al poner el RUC)');
+    return { tipoDoc: '6', numDoc: doc, nombre };
+  }
+  if (/^\d{8}$/.test(doc)) return { tipoDoc: '1', numDoc: doc, nombre: nombre || `CLIENTE DNI ${doc}` };
+  if (doc) throw new Error('El documento debe ser DNI (8 dígitos) o RUC (11)');
+  return { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
+}
+
+/** Paso 1 de 3: tipo de comprobante y cliente. */
+function pasoCliente(estado, nav) {
+  window.scrollTo(0, 0);
+  $app.innerHTML = `
+    ${pasoCabecera(1, '¿Boleta o factura?', 'p1Atras')}
+    <div class="tarjeta" style="max-width:560px">
+      <div class="conmutador" id="p1Tipo">
+        <button data-v="boleta" class="${estado.tipo === 'boleta' ? 'activa' : ''}">BOLETA</button>
+        <button data-v="factura" class="${estado.tipo === 'factura' ? 'activa' : ''}">FACTURA</button>
+      </div>
+      <h2>¿Para quién?</h2>
+      ${estado.faltaDoc ? '<p class="error">En el mensaje no venía el DNI/RUC: pídalo al cliente o toque «Al paso».</p>' : ''}
+      <div class="sugerencias" id="p1Frecuentes"></div>
+      <div class="fila" style="margin-top:8px">
+        <input id="p1Doc" inputmode="numeric" maxlength="11" placeholder="DNI o RUC" value="${esc(estado.doc || '')}" ${estado.faltaDoc ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : ''}>
+        <button class="boton-suave" id="p1Varios" style="flex:0 0 auto">Al paso</button>
+      </div>
+      <input id="p1Nombre" placeholder="El nombre se busca solo" style="margin-top:8px" value="${esc(estado.nombre || '')}">
+      <p class="ayuda" id="p1Busqueda"></p>
+      <p class="error" id="p1Err" hidden></p>
+      <br>
+      <button class="boton-grande" id="p1Seguir">CONTINUAR →</button>
+    </div>`;
+
+  const $ = (id) => document.getElementById(id);
+  $('p1Atras').onclick = nav.alAtras;
+
+  const marcarFactura = () => {
+    estado.tipo = 'factura';
+    document.querySelectorAll('#p1Tipo button').forEach((x) => x.classList.toggle('activa', x.dataset.v === 'factura'));
+    $('p1Varios').style.display = 'none';
+  };
+  document.querySelectorAll('#p1Tipo button').forEach((b) => {
+    b.onclick = () => {
+      estado.tipo = b.dataset.v;
+      document.querySelectorAll('#p1Tipo button').forEach((x) => x.classList.toggle('activa', x === b));
+      $('p1Varios').style.display = estado.tipo === 'factura' ? 'none' : '';
+    };
+  });
+  if (estado.tipo === 'factura') $('p1Varios').style.display = 'none';
+
+  const elegirCliente = (numDoc, nombre) => {
+    $('p1Doc').value = numDoc;
+    $('p1Nombre').value = nombre;
+    $('p1Busqueda').textContent = '✔ Cliente elegido';
+    if (numDoc.length === 11) marcarFactura();
+  };
+  api('/api/clientes-frecuentes').then((lista) => {
+    $('p1Frecuentes').innerHTML = lista
+      .map((f) => `<button type="button" data-doc="${esc(f.numDoc)}" data-nom="${esc(f.nombre)}">👤 ${esc(f.nombre.split(' ').slice(0, 3).join(' '))}</button>`)
+      .join('');
+    document.querySelectorAll('#p1Frecuentes button').forEach((b) => {
+      b.onclick = () => elegirCliente(b.dataset.doc, b.dataset.nom);
+    });
+  }).catch(() => {});
+
+  const buscarNombre = async () => {
+    const doc = $('p1Doc').value.trim();
+    if (!/^\d{8}$|^\d{11}$/.test(doc)) return;
+    $('p1Busqueda').textContent = 'Buscando nombre…';
+    try {
+      const r = await api(`/api/consulta-doc?numero=${doc}`);
+      $('p1Nombre').value = r.nombre;
+      $('p1Busqueda').textContent = `✔ Encontrado (${r.fuente === 'cache' ? 'cliente conocido' : 'consulta en línea'})`;
+      if (doc.length === 11) marcarFactura();
+    } catch {
+      $('p1Busqueda').textContent = 'No se encontró: escriba el nombre.';
+    }
+  };
+  $('p1Doc').addEventListener('change', buscarNombre);
+  if (estado.doc && !estado.nombre) buscarNombre();
+
+  $('p1Varios').onclick = () => {
+    $('p1Doc').value = '';
+    $('p1Nombre').value = '';
+    $('p1Busqueda').textContent = '✔ Se emitirá a CLIENTES VARIOS (sin documento)';
+  };
+
+  $('p1Seguir').onclick = () => {
+    estado.doc = $('p1Doc').value.trim();
+    estado.nombre = $('p1Nombre').value.trim();
+    try {
+      clienteDeEstado(estado); // solo valida; si algo falta, lo explica
+      estado.faltaDoc = false;
+      nav.alContinuar();
+    } catch (e) {
+      $('p1Err').textContent = e.message;
+      $('p1Err').hidden = false;
+    }
+  };
+}
+
+/** Paso 2 de 3 (importación/OCR): revisar y corregir los productos leídos. */
+function pasoDetalleImportar(estado, nav) {
+  window.scrollTo(0, 0);
+  if (!estado.items.length) estado.items.push({ descripcion: '', cantidad: 1, precioCentimos: null, faltantes: [] });
+  const marca = (cond) => (cond ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : '');
+  const fila = (it, i) => `
+    <div class="item-import" style="${i ? 'border-top:1.5px dashed var(--linea);padding-top:12px;margin-top:12px' : ''}">
+      <label>Producto ${i + 1} — descripción</label>
+      <input id="p2Desc_${i}" value="${esc(it ? it.descripcion : '')}" ${marca(it && it.faltantes.includes('descripcion'))}>
+      <div class="fila">
+        <div><label>Cantidad</label><input id="p2Cant_${i}" inputmode="numeric" value="${it ? it.cantidad : 1}"></div>
+        <div><label>Precio c/u (S/)</label><input id="p2Monto_${i}" class="monto" inputmode="decimal" value="${it && it.precioCentimos ? (it.precioCentimos / 100).toFixed(2) : ''}" ${marca(it && it.faltantes.includes('monto'))}></div>
+      </div>
+    </div>`;
+
+  const hayFaltantes = estado.items.some((it) => it.faltantes.length);
+  $app.innerHTML = `
+    ${pasoCabecera(2, 'Revise los productos', 'p2Atras')}
+    <div class="tarjeta" style="max-width:560px">
+      ${hayFaltantes ? '<p class="error">Complete lo marcado en ámbar (pregunte al cliente si hace falta).</p>' : '<p class="ayuda">Así se leyó el mensaje. Corrija lo que haga falta.</p>'}
+      ${(estado.avisos || []).map((v) => `<p class="ayuda">ℹ️ ${esc(v)}</p>`).join('')}
+      <div class="conmutador" id="p2Rubro">
+        <button data-v="transporte" class="${estado.rubro === 'transporte' ? 'activa' : ''}">TRANSPORTE</button>
+        <button data-v="hospedaje" class="${estado.rubro === 'hospedaje' ? 'activa' : ''}">HOSPEDAJE</button>
+      </div>
+      <div id="p2Items" style="margin-top:14px">${estado.items.map((it, i) => fila(it, i)).join('')}</div>
+      <button class="boton-suave" id="p2Mas" style="width:100%;margin-top:10px">➕ Agregar otro producto</button>
+      <label style="margin-top:14px"><input type="checkbox" id="p2Igv" style="width:auto" ${estado.igv ? 'checked' : ''}> Operación con IGV (18%)</label>
+      <div class="total-grande" id="p2Total"></div>
+      <p class="error" id="p2Err" hidden></p>
+      <br>
+      <button class="boton-grande" id="p2Seguir">CONTINUAR →</button>
+    </div>`;
+
+  const $ = (id) => document.getElementById(id);
+  $('p2Atras').onclick = nav.alAtras;
+  document.querySelectorAll('#p2Rubro button').forEach((b) => {
+    b.onclick = () => {
+      estado.rubro = b.dataset.v;
+      document.querySelectorAll('#p2Rubro button').forEach((x) => x.classList.toggle('activa', x === b));
+    };
+  });
+
+  let numFilas = estado.items.length;
+  const total = () => {
+    let suma = 0;
+    for (let i = 0; i < numFilas; i++) {
+      const $m = $(`p2Monto_${i}`);
+      if (!$m) continue;
+      const p = montoACentimos($m.value);
+      const n = Math.max(1, parseInt($(`p2Cant_${i}`).value || '1', 10));
+      if (p) suma += p * n;
+    }
+    $('p2Total').textContent = suma ? `Total: ${S(suma)}` : '';
+  };
+  $('p2Items').addEventListener('input', total);
+  total();
+
+  $('p2Mas').onclick = () => {
+    $('p2Items').insertAdjacentHTML('beforeend', fila(null, numFilas));
+    numFilas++;
+  };
+
+  $('p2Seguir').onclick = () => {
+    const $err = $('p2Err');
+    $err.hidden = true;
+    try {
+      const items = [];
+      for (let i = 0; i < numFilas; i++) {
+        const el = $(`p2Desc_${i}`);
+        if (!el) continue;
+        const descripcion = el.value.trim();
+        const precioCentimos = montoACentimos($(`p2Monto_${i}`).value);
+        const cantidad = Math.max(1, parseInt($(`p2Cant_${i}`).value || '1', 10));
+        if (!descripcion && precioCentimos === null) continue; // fila vacía agregada de más
+        if (!descripcion) throw new Error(`Falta la descripción del producto ${i + 1}`);
+        if (precioCentimos === null || precioCentimos <= 0) throw new Error(`Falta el precio del producto ${i + 1} (pregunte al cliente)`);
+        items.push({ descripcion, cantidad, precioCentimos, faltantes: [] });
+      }
+      if (!items.length) throw new Error('No hay productos para emitir');
+      estado.items = items;
+      estado.igv = $('p2Igv').checked;
+      nav.alContinuar();
+    } catch (e) {
+      $err.textContent = e.message;
+      $err.hidden = false;
+    }
+  };
+}
+
+/** Paso 3 de 3: resumen grande y botón EMITIR. */
+function pasoResumen(estado, nav) {
+  window.scrollTo(0, 0);
+  const rubro = estado.origen === 'manual' ? SERVICIOS[estado.items[0].servicio].rubro : estado.rubro;
+  const serie = SERIES[rubro][estado.tipo];
+  const cliente = clienteDeEstado(estado);
+  const total = estado.items.reduce((a, it) => a + it.cantidad * it.precioCentimos, 0);
+
+  $app.innerHTML = `
+    ${pasoCabecera(3, 'Revise y emita', 'p3Atras')}
+    <div class="tarjeta" style="max-width:560px">
+      <div class="res-linea"><span>Comprobante</span><b>${estado.tipo === 'factura' ? 'FACTURA' : 'BOLETA'} ${serie}</b></div>
+      <div class="res-linea"><span>Cliente</span><b style="text-align:right">${esc(cliente.nombre)}</b></div>
+      ${cliente.numDoc !== '-' ? `<div class="res-linea"><span>${cliente.tipoDoc === '6' ? 'RUC' : 'DNI'}</span><b>${esc(cliente.numDoc)}</b></div>` : ''}
+      <div style="border-top:1.5px dashed var(--linea);margin:10px 0 4px"></div>
+      ${estado.items.map((it) => `
+        <div class="res-linea"><span>${esc(it.descripcion)}${it.cantidad > 1 ? ` × ${it.cantidad}` : ''}</span><b>${S(it.cantidad * it.precioCentimos)}</b></div>`).join('')}
+      <div class="total-grande">Total: ${S(total)}</div>
+      <p class="error" id="p3Err" hidden></p>
+      <button class="boton-grande" id="p3Emitir">✅ EMITIR</button>
+      <button class="boton-suave" id="p3Corregir" style="width:100%;margin-top:10px">✏️ Corregir algo</button>
+    </div>`;
+
+  document.getElementById('p3Atras').onclick = nav.alAtras;
+  document.getElementById('p3Corregir').onclick = nav.alAtras;
+  document.getElementById('p3Emitir').onclick = async (ev) => {
+    const boton = ev.target;
+    const $err = document.getElementById('p3Err');
+    $err.hidden = true;
+    boton.disabled = true;
+    boton.textContent = 'Emitiendo…';
+    try {
+      const res = await api('/api/comprobantes', {
+        method: 'POST',
+        body: JSON.stringify({
+          serie,
+          cliente,
+          items: estado.items.map((it) => ({
+            descripcion: it.descripcion,
+            montoCentimos: it.precioCentimos,
+            cantidad: it.cantidad,
+            ...(estado.origen === 'importar' ? { afectacion: estado.igv ? '10' : '20' } : {}),
+          })),
+        }),
+      });
+      location.hash = `#ticket/${res.id}`;
+    } catch (e) {
+      $err.textContent = e.message;
+      $err.hidden = false;
+      boton.disabled = false;
+      boton.textContent = '✅ EMITIR';
+    }
+  };
+}
+
+/** Reduce la foto a ~1600 px de lado mayor y la devuelve en base64 (JPEG). */
+async function reducirFoto(archivo) {
+  const img = await new Promise((ok, mal) => {
+    const url = URL.createObjectURL(archivo);
+    const el = new Image();
+    el.onload = () => { URL.revokeObjectURL(url); ok(el); };
+    el.onerror = () => { URL.revokeObjectURL(url); mal(new Error('la foto no se pudo abrir')); };
+    el.src = url;
+  });
+  const lado = Math.max(img.width, img.height);
+  const escala = lado > 1600 ? 1600 / lado : 1;
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(img.width * escala);
+  cv.height = Math.round(img.height * escala);
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+  return cv.toDataURL('image/jpeg', 0.85).split(',')[1];
 }
 
 /* ---------- Asistente de emisión: todo por toques ---------- */
@@ -335,336 +561,236 @@ const SERVICIOS = {
 };
 
 async function vistaEmitir() {
-  const items = []; // { servicio, descripcion, cantidad, precioCentimos }
-  let tipoDoc = 'boleta';
-  let servicio = 'pasaje';
-  const sugerenciasApi = {}; // caché por servicio
+  const estado = { origen: 'manual', tipo: 'boleta', doc: '', nombre: '', servicio: 'pasaje', items: [], avisos: [] };
+  const p1 = () => pasoCliente(estado, { alAtras: () => { location.hash = '#home'; }, alContinuar: () => p2() });
+  const p2 = () => pasoDetalleManual(estado, { alAtras: p1, alContinuar: () => p3() });
+  const p3 = () => pasoResumen(estado, { alAtras: p2 });
+  p1();
+}
+
+/** Paso 2 de 3 (manual): qué le cobramos — chips, cantidad y precio, sin teclear letras. */
+async function pasoDetalleManual(estado, nav) {
+  window.scrollTo(0, 0);
+  const sugerenciasApi = pasoDetalleManual.cache || (pasoDetalleManual.cache = {});
 
   $app.innerHTML = `
-    <h1>Emitir</h1>
-    <div class="dos-columnas">
-    <div>
-    <div class="tarjeta">
-      <div class="conmutador" id="emTipo">
-        <button data-v="boleta" class="activa">BOLETA</button>
-        <button data-v="factura">FACTURA</button>
+    ${pasoCabecera(2, '¿Qué le cobramos?', 'pmAtras')}
+    <div class="tarjeta" style="max-width:560px">
+      <div id="pmLista"></div>
+      <div class="conmutador" id="pmServicio">
+        <button data-v="pasaje" class="${estado.servicio === 'pasaje' ? 'activa' : ''}">🚌 Pasaje</button>
+        <button data-v="encomienda" class="${estado.servicio === 'encomienda' ? 'activa' : ''}">📦 Encomienda</button>
+        <button data-v="hospedaje" class="${estado.servicio === 'hospedaje' ? 'activa' : ''}">🛏️ Hospedaje</button>
       </div>
-      <h2>¿Para quién?</h2>
-      <div class="sugerencias" id="emFrecuentes"></div>
-      <div class="fila" style="margin-top:8px">
-        <input id="emDoc" inputmode="numeric" maxlength="11" placeholder="DNI o RUC">
-        <button class="boton-suave" id="emVarios" style="flex:0 0 auto">Al paso</button>
-      </div>
-      <input id="emNombre" placeholder="El nombre se busca solo" style="margin-top:8px">
-      <p class="ayuda" id="emBusqueda"></p>
-    </div>
-
-    <div class="tarjeta">
-      <h2 style="margin-top:0">¿Qué le cobramos?</h2>
-      <div class="conmutador" id="emServicio">
-        <button data-v="pasaje" class="activa">🚌 Pasaje</button>
-        <button data-v="encomienda">📦 Encomienda</button>
-        <button data-v="hospedaje">🛏️ Hospedaje</button>
-      </div>
-      <div id="emZona"></div>
-    </div>
-    </div>
-
-    <div>
-    <div class="tarjeta">
-      <h2 style="margin-top:0">Resumen</h2>
-      <div id="emLineas"><p class="ayuda">Elija el servicio, toque una opción y ponga el precio.</p></div>
-      <div class="total-grande" id="emTotal"></div>
-      <p class="error" id="emErr" hidden></p>
-      <button class="boton-grande" id="emEmitir">EMITIR</button>
-    </div>
-    </div>
+      <div id="pmZona"></div>
+      <p class="error" id="pmErr" hidden></p>
+      <br>
+      <button class="boton-grande" id="pmSeguir">CONTINUAR →</button>
     </div>`;
 
   const $ = (id) => document.getElementById(id);
+  $('pmAtras').onclick = nav.alAtras;
 
-  // --- Tipo de comprobante ---
-  document.querySelectorAll('#emTipo button').forEach((b) => {
-    b.onclick = () => {
-      tipoDoc = b.dataset.v;
-      document.querySelectorAll('#emTipo button').forEach((x) => x.classList.toggle('activa', x === b));
-      $('emVarios').style.display = tipoDoc === 'factura' ? 'none' : '';
-    };
-  });
-
-  // --- Cliente: frecuentes con un toque + búsqueda automática ---
-  const elegirCliente = (numDoc, nombre) => {
-    $('emDoc').value = numDoc;
-    $('emNombre').value = nombre;
-    $('emBusqueda').textContent = '✔ Cliente elegido';
-    if (numDoc.length === 11) {
-      tipoDoc = 'factura';
-      document.querySelectorAll('#emTipo button').forEach((x) => x.classList.toggle('activa', x.dataset.v === 'factura'));
-    }
-  };
-  api('/api/clientes-frecuentes').then((lista) => {
-    $('emFrecuentes').innerHTML = lista
-      .map((f) => `<button type="button" data-doc="${esc(f.numDoc)}" data-nom="${esc(f.nombre)}">👤 ${esc(f.nombre.split(' ').slice(0, 3).join(' '))}</button>`)
-      .join('');
-    document.querySelectorAll('#emFrecuentes button').forEach((b) => {
-      b.onclick = () => elegirCliente(b.dataset.doc, b.dataset.nom);
+  // Lo ya agregado, arriba y compacto, con su suma parcial.
+  const pintaLista = () => {
+    const cont = $('pmLista');
+    if (!estado.items.length) { cont.innerHTML = ''; return; }
+    const suma = estado.items.reduce((a, it) => a + it.cantidad * it.precioCentimos, 0);
+    cont.innerHTML = estado.items.map((it, i) => `
+      <div class="item-linea">
+        <div>${esc(it.descripcion)}${it.cantidad > 1 ? ` x${it.cantidad}` : ''}</div>
+        <div><b>${S(it.cantidad * it.precioCentimos)}</b> <button class="quitar" data-i="${i}">✕</button></div>
+      </div>`).join('') +
+      `<p class="ayuda" style="text-align:right;margin:6px 0 0"><b>Va sumando: ${S(suma)}</b></p>
+       <div style="border-top:1.5px dashed var(--linea);margin:10px 0 14px"></div>`;
+    cont.querySelectorAll('.quitar').forEach((b) => {
+      b.onclick = () => { estado.items.splice(Number(b.dataset.i), 1); pintaLista(); };
     });
-  }).catch(() => {});
-  $('emDoc').addEventListener('change', async () => {
-    const doc = $('emDoc').value.trim();
-    if (!/^\d{8}$|^\d{11}$/.test(doc)) return;
-    $('emBusqueda').textContent = 'Buscando nombre…';
-    try {
-      const r = await api(`/api/consulta-doc?numero=${doc}`);
-      $('emNombre').value = r.nombre;
-      $('emBusqueda').textContent = `✔ Encontrado (${r.fuente === 'cache' ? 'cliente conocido' : 'consulta en línea'})`;
-      if (doc.length === 11) {
-        tipoDoc = 'factura';
-        document.querySelectorAll('#emTipo button').forEach((x) => x.classList.toggle('activa', x.dataset.v === 'factura'));
-      }
-    } catch {
-      $('emBusqueda').textContent = 'No se encontró: escriba el nombre.';
-    }
-  });
-  $('emVarios').onclick = () => {
-    $('emDoc').value = '';
-    $('emNombre').value = '';
-    $('emBusqueda').textContent = '✔ Se emitirá a CLIENTES VARIOS (sin documento)';
   };
 
-  // --- Zona del servicio: chips + cantidad + precio (sin teclear letras) ---
+  const tomarActual = () => {
+    const desc = $('pmDesc').value.trim();
+    const precio = montoACentimos($('pmPrecio').value);
+    const cant = Math.max(1, parseInt($('pmCant').value || '1', 10));
+    if (!desc && precio === null) return { vacio: true };
+    if (!desc) return { error: 'Toque una opción del detalle (o dicte con el micrófono 🎤)' };
+    if (precio === null || precio <= 0) return { error: 'Ponga el precio' };
+    return { item: { servicio: estado.servicio, descripcion: desc, cantidad: cant, precioCentimos: precio } };
+  };
+
   const pintaZona = async () => {
-    const cfg = SERVICIOS[servicio];
-    const esHosp = servicio === 'hospedaje';
-    $('emZona').innerHTML = `
-      <div class="sugerencias" id="emChips" style="margin-top:12px"></div>
+    const cfg = SERVICIOS[estado.servicio];
+    const esHosp = estado.servicio === 'hospedaje';
+    $('pmZona').innerHTML = `
+      <div class="sugerencias" id="pmChips" style="margin-top:12px"></div>
       <label>Detalle</label>
       <div class="fila">
-        <input id="emDesc" placeholder="Toque una opción o el micrófono">
-        ${RecVoz ? '<button type="button" class="boton-suave mic" id="emMic" title="Dictar por voz">🎤</button>' : ''}
+        <input id="pmDesc" placeholder="Toque una opción o el micrófono">
+        ${RecVoz ? '<button type="button" class="boton-suave mic" id="pmMic" title="Dictar por voz">🎤</button>' : ''}
       </div>
-      <div id="emVoz" hidden style="background:var(--acento-tinte);border-radius:12px;padding:12px 14px;margin-top:8px">
-        <p style="margin:0 0 8px" id="emVozTexto"></p>
+      <div id="pmVoz" hidden style="background:var(--acento-tinte);border-radius:12px;padding:12px 14px;margin-top:8px">
+        <p style="margin:0 0 8px" id="pmVozTexto"></p>
         <div class="fila">
-          <button type="button" id="emVozOk">✔ Está bien</button>
-          <button type="button" class="boton-linea" id="emVozRepetir">🎤 Repetir</button>
+          <button type="button" id="pmVozOk">✔ Está bien</button>
+          <button type="button" class="boton-linea" id="pmVozRepetir">🎤 Repetir</button>
         </div>
       </div>
       ${esHosp ? `
-        <button class="boton-suave" id="emBtnFechas" style="margin-top:8px;padding:8px 14px;font-size:.85rem">📅 Agregar fechas (opcional)</button>
-        <div class="fila" id="emFechas" hidden style="margin-top:8px">
-          <div><label>Desde</label><input type="date" id="emDesde"></div>
-          <div><label>Hasta</label><input type="date" id="emHasta"></div>
+        <button class="boton-suave" id="pmBtnFechas" style="margin-top:8px;padding:8px 14px;font-size:.85rem">📅 Agregar fechas (opcional)</button>
+        <div class="fila" id="pmFechas" hidden style="margin-top:8px">
+          <div><label>Desde</label><input type="date" id="pmDesde"></div>
+          <div><label>Hasta</label><input type="date" id="pmHasta"></div>
         </div>` : ''}
       <div class="fila" style="margin-top:4px">
         <div>
           <label>${cfg.etiquetaCant}</label>
           <div class="stepper">
-            <button type="button" id="emMenos">−</button>
-            <input id="emCant" inputmode="numeric" value="1">
-            <button type="button" id="emMas">+</button>
+            <button type="button" id="pmMenos">−</button>
+            <input id="pmCant" inputmode="numeric" value="1">
+            <button type="button" id="pmMas">+</button>
           </div>
         </div>
         <div>
           <label>${cfg.etiquetaPrecio}</label>
-          <input id="emPrecio" class="monto" inputmode="decimal" placeholder="0.00">
+          <input id="pmPrecio" class="monto" inputmode="decimal" placeholder="0.00">
         </div>
       </div>
-      <p class="ayuda" id="emSubtotal"></p>
-      <button class="boton-suave" id="emAgregar" style="width:100%;margin-top:8px">➕ Agregar a la lista</button>`;
+      <p class="ayuda" id="pmSubtotal"></p>
+      <button class="boton-suave" id="pmAgregar" style="width:100%;margin-top:8px">➕ Agregar otro producto</button>`;
 
     // Chips: historial propio + opciones fijas.
-    if (!sugerenciasApi[servicio]) {
-      try { sugerenciasApi[servicio] = (await api(`/api/sugerencias?tipo=${servicio}`)).map((x) => x.descripcion); }
-      catch { sugerenciasApi[servicio] = []; }
+    if (!sugerenciasApi[estado.servicio]) {
+      try { sugerenciasApi[estado.servicio] = (await api(`/api/sugerencias?tipo=${estado.servicio}`)).map((x) => x.descripcion); }
+      catch { sugerenciasApi[estado.servicio] = []; }
     }
-    const chips = [...new Set([...sugerenciasApi[servicio], ...cfg.semillas])].slice(0, 6);
-    $('emChips').innerHTML = chips.map((t) => `<button type="button">${esc(t)}</button>`).join('');
-    document.querySelectorAll('#emChips button').forEach((b) => {
+    const chips = [...new Set([...sugerenciasApi[estado.servicio], ...cfg.semillas])].slice(0, 6);
+    $('pmChips').innerHTML = chips.map((t) => `<button type="button">${esc(t)}</button>`).join('');
+    document.querySelectorAll('#pmChips button').forEach((b) => {
       b.onclick = () => {
-        $('emDesc').value = b.textContent;
-        document.querySelectorAll('#emChips button').forEach((x) => x.classList.toggle('elegida', x === b));
-        $('emPrecio').focus();
+        $('pmDesc').value = b.textContent;
+        document.querySelectorAll('#pmChips button').forEach((x) => x.classList.toggle('elegida', x === b));
+        $('pmPrecio').focus();
       };
     });
 
     const subtotal = () => {
-      const n = Math.max(1, parseInt($('emCant').value || '1', 10));
-      const p = montoACentimos($('emPrecio').value);
-      $('emSubtotal').textContent = p ? `Subtotal: ${n} × ${S(p)} = ${S(n * p)}` : '';
+      const n = Math.max(1, parseInt($('pmCant').value || '1', 10));
+      const p = montoACentimos($('pmPrecio').value);
+      $('pmSubtotal').textContent = p ? `Subtotal: ${n} × ${S(p)} = ${S(n * p)}` : '';
     };
-    $('emMenos').onclick = () => { $('emCant').value = Math.max(1, parseInt($('emCant').value || '1', 10) - 1); subtotal(); };
-    $('emMas').onclick = () => { $('emCant').value = Math.min(200, parseInt($('emCant').value || '1', 10) + 1); subtotal(); };
-    $('emCant').addEventListener('input', subtotal);
-    $('emPrecio').addEventListener('input', subtotal);
+    $('pmMenos').onclick = () => { $('pmCant').value = Math.max(1, parseInt($('pmCant').value || '1', 10) - 1); subtotal(); };
+    $('pmMas').onclick = () => { $('pmCant').value = Math.min(200, parseInt($('pmCant').value || '1', 10) + 1); subtotal(); };
+    $('pmCant').addEventListener('input', subtotal);
+    $('pmPrecio').addEventListener('input', subtotal);
 
     // --- Dictado por voz: habla, confirma lo entendido, y se llena solo ---
-    if (RecVoz && $('emMic')) {
+    if (RecVoz && $('pmMic')) {
       let ultimoTexto = '';
       const escuchar = () => {
         const rec = new RecVoz();
         rec.lang = 'es-PE';
         rec.interimResults = false;
         rec.maxAlternatives = 1;
-        $('emMic').classList.add('grabando');
-        $('emMic').textContent = '🔴';
-        $('emVoz').hidden = true;
+        $('pmMic').classList.add('grabando');
+        $('pmMic').textContent = '🔴';
+        $('pmVoz').hidden = true;
         rec.onresult = (ev) => {
           ultimoTexto = ev.results[0][0].transcript.trim();
-          $('emVozTexto').innerHTML = `Le entendí: <b>«${esc(ultimoTexto)}»</b>`;
-          $('emVoz').hidden = false;
+          $('pmVozTexto').innerHTML = `Le entendí: <b>«${esc(ultimoTexto)}»</b>`;
+          $('pmVoz').hidden = false;
         };
         rec.onerror = () => {
-          $('emVozTexto').innerHTML = 'No le escuché bien. Toque 🎤 Repetir y hable un poquito más despacio.';
-          $('emVoz').hidden = false;
+          $('pmVozTexto').innerHTML = 'No le escuché bien. Toque 🎤 Repetir y hable un poquito más despacio.';
+          $('pmVoz').hidden = false;
         };
         rec.onend = () => {
-          $('emMic').classList.remove('grabando');
-          $('emMic').textContent = '🎤';
+          $('pmMic').classList.remove('grabando');
+          $('pmMic').textContent = '🎤';
         };
         rec.start();
       };
-      $('emMic').onclick = escuchar;
-      $('emVozRepetir').onclick = escuchar;
-      $('emVozOk').onclick = async () => {
-        $('emVoz').hidden = true;
+      $('pmMic').onclick = escuchar;
+      $('pmVozRepetir').onclick = escuchar;
+      $('pmVozOk').onclick = async () => {
+        $('pmVoz').hidden = true;
         if (!ultimoTexto) return;
         try {
           const a = await api('/api/analizar-mensaje', { method: 'POST', body: JSON.stringify({ texto: ultimoTexto }) });
-          $('emDesc').value = a.descripcion || ultimoTexto;
+          $('pmDesc').value = a.descripcion || ultimoTexto;
           if (a.reparto) {
-            $('emCant').value = a.reparto.cantidad;
-            $('emPrecio').value = (a.reparto.precioUnitarioCentimos / 100).toFixed(2);
+            $('pmCant').value = a.reparto.cantidad;
+            $('pmPrecio').value = (a.reparto.precioUnitarioCentimos / 100).toFixed(2);
           } else if (a.cantidad > 1) {
-            $('emCant').value = a.cantidad;
+            $('pmCant').value = a.cantidad;
           }
           if (esHosp && a.fechas) {
-            $('emFechas').hidden = false;
-            $('emBtnFechas').hidden = true;
-            $('emDesde').value = a.fechas.desde;
-            $('emHasta').value = a.fechas.hasta;
-            $('emCant').value = a.fechas.dias;
+            $('pmFechas').hidden = false;
+            $('pmBtnFechas').hidden = true;
+            $('pmDesde').value = a.fechas.desde;
+            $('pmHasta').value = a.fechas.hasta;
+            $('pmCant').value = a.fechas.dias;
           }
-          $('emCant').dispatchEvent(new Event('input'));
+          $('pmCant').dispatchEvent(new Event('input'));
         } catch {
-          $('emDesc').value = ultimoTexto;
+          $('pmDesc').value = ultimoTexto;
         }
       };
     }
 
     if (esHosp) {
-      $('emBtnFechas').onclick = () => { $('emFechas').hidden = false; $('emBtnFechas').hidden = true; };
+      $('pmBtnFechas').onclick = () => { $('pmFechas').hidden = false; $('pmBtnFechas').hidden = true; };
       const fechas = () => {
-        const d1 = $('emDesde').value, d2 = $('emHasta').value;
+        const d1 = $('pmDesde').value, d2 = $('pmHasta').value;
         if (!d1 || !d2 || d2 <= d1) return;
         const dias = Math.round((new Date(d2) - new Date(d1)) / 86400000);
-        $('emCant').value = dias;
+        $('pmCant').value = dias;
         const fmtF = (x) => { const [, m, d] = x.split('-'); return `${d}/${m}`; };
-        const base = ($('emDesc').value || 'Alquiler de habitación').replace(/ del \d{2}\/\d{2} al \d{2}\/\d{2}$/, '');
-        $('emDesc').value = `${base} del ${fmtF(d1)} al ${fmtF(d2)}`;
+        const base = ($('pmDesc').value || 'Alquiler de habitación').replace(/ del \d{2}\/\d{2} al \d{2}\/\d{2}$/, '');
+        $('pmDesc').value = `${base} del ${fmtF(d1)} al ${fmtF(d2)}`;
         subtotal();
       };
-      $('emDesde').addEventListener('change', fechas);
-      $('emHasta').addEventListener('change', fechas);
+      $('pmDesde').addEventListener('change', fechas);
+      $('pmHasta').addEventListener('change', fechas);
     }
 
-    $('emAgregar').onclick = () => {
-      const it = tomarItem();
-      if (!it) return;
-      items.push(it);
-      $('emDesc').value = '';
-      $('emPrecio').value = '';
-      $('emCant').value = '1';
-      $('emSubtotal').textContent = '';
-      document.querySelectorAll('#emChips button').forEach((x) => x.classList.remove('elegida'));
-      pintaLineas();
+    $('pmAgregar').onclick = () => {
+      const r = tomarActual();
+      const $err = $('pmErr');
+      $err.hidden = true;
+      if (r.error) { $err.textContent = r.error; $err.hidden = false; return; }
+      if (r.vacio) { $err.textContent = 'Primero llene este producto (detalle y precio)'; $err.hidden = false; return; }
+      estado.items.push(r.item);
+      $('pmDesc').value = '';
+      $('pmPrecio').value = '';
+      $('pmCant').value = '1';
+      $('pmSubtotal').textContent = '';
+      document.querySelectorAll('#pmChips button').forEach((x) => x.classList.remove('elegida'));
+      pintaLista();
     };
   };
 
-  const tomarItem = () => {
-    const $err = $('emErr');
-    $err.hidden = true;
-    const desc = $('emDesc').value.trim();
-    const precio = montoACentimos($('emPrecio').value);
-    const cant = Math.max(1, parseInt($('emCant').value || '1', 10));
-    if (!desc && precio === null) return null;
-    if (!desc) { $err.textContent = 'Toque una opción del detalle'; $err.hidden = false; return null; }
-    if (precio === null || precio <= 0) { $err.textContent = 'Ponga el precio'; $err.hidden = false; return null; }
-    return { servicio, descripcion: desc, cantidad: cant, precioCentimos: precio };
-  };
-
-  const pintaLineas = () => {
-    const cont = $('emLineas');
-    if (!items.length) {
-      cont.innerHTML = '<p class="ayuda">Elija el servicio, toque una opción y ponga el precio.</p>';
-    } else {
-      cont.innerHTML = items.map((it, i) => `
-        <div class="item-linea">
-          <div>${esc(it.descripcion)}${it.cantidad > 1 ? ` x${it.cantidad}` : ''}</div>
-          <div><b>${S(it.cantidad * it.precioCentimos)}</b> <button class="quitar" data-i="${i}">✕</button></div>
-        </div>`).join('');
-      cont.querySelectorAll('.quitar').forEach((b) => {
-        b.onclick = () => { items.splice(Number(b.dataset.i), 1); pintaLineas(); };
-      });
-    }
-    const suma = items.reduce((a, it) => a + it.cantidad * it.precioCentimos, 0);
-    $('emTotal').textContent = suma ? `Total: ${S(suma)}` : '';
-  };
-
-  document.querySelectorAll('#emServicio button').forEach((b) => {
+  document.querySelectorAll('#pmServicio button').forEach((b) => {
     b.onclick = () => {
-      servicio = b.dataset.v;
-      document.querySelectorAll('#emServicio button').forEach((x) => x.classList.toggle('activa', x === b));
+      estado.servicio = b.dataset.v;
+      document.querySelectorAll('#pmServicio button').forEach((x) => x.classList.toggle('activa', x === b));
       pintaZona();
     };
   });
 
-  $('emEmitir').onclick = async (ev) => {
-    const boton = ev.target;
-    const $err = $('emErr');
+  $('pmSeguir').onclick = () => {
+    const $err = $('pmErr');
     $err.hidden = true;
-    try {
-      const suelto = tomarItem();
-      const todos = suelto ? [...items, suelto] : [...items];
-      if (!todos.length) throw new Error('Agregue al menos un servicio');
-      const rubros = new Set(todos.map((it) => SERVICIOS[it.servicio].rubro));
-      if (rubros.size > 1) throw new Error('El hospedaje va en un comprobante aparte del transporte (series distintas)');
-      const rubro = [...rubros][0];
-
-      const doc = $('emDoc').value.trim();
-      const nombre = $('emNombre').value.trim();
-      let cliente;
-      if (tipoDoc === 'factura') {
-        if (!/^\d{11}$/.test(doc)) throw new Error('La factura necesita el RUC (11 dígitos)');
-        if (!nombre) throw new Error('Falta la razón social (se busca sola al poner el RUC)');
-        cliente = { tipoDoc: '6', numDoc: doc, nombre };
-      } else if (/^\d{8}$/.test(doc)) {
-        cliente = { tipoDoc: '1', numDoc: doc, nombre: nombre || `CLIENTE DNI ${doc}` };
-      } else if (doc) {
-        throw new Error('El documento debe ser DNI (8 dígitos) o RUC (11)');
-      } else {
-        cliente = { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
-      }
-
-      boton.disabled = true;
-      boton.textContent = 'Emitiendo…';
-      const res = await api('/api/comprobantes', {
-        method: 'POST',
-        body: JSON.stringify({
-          serie: SERIES[rubro][tipoDoc],
-          cliente,
-          items: todos.map((it) => ({ descripcion: it.descripcion, montoCentimos: it.precioCentimos, cantidad: it.cantidad })),
-        }),
-      });
-      location.hash = `#ticket/${res.id}`;
-    } catch (e) {
-      $err.textContent = e.message;
-      $err.hidden = false;
-      boton.disabled = false;
-      boton.textContent = 'EMITIR';
-    }
+    const r = tomarActual();
+    if (r.error) { $err.textContent = r.error; $err.hidden = false; return; }
+    const items = r.item ? [...estado.items, r.item] : [...estado.items];
+    if (!items.length) { $err.textContent = 'Agregue al menos un servicio (toque una opción y ponga el precio)'; $err.hidden = false; return; }
+    const rubros = new Set(items.map((it) => SERVICIOS[it.servicio].rubro));
+    if (rubros.size > 1) { $err.textContent = 'El hospedaje va en un comprobante aparte del transporte (series distintas)'; $err.hidden = false; return; }
+    estado.items = items;
+    nav.alContinuar();
   };
 
+  pintaLista();
   pintaZona();
 }
 

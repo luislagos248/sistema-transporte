@@ -39,8 +39,12 @@ export interface Env {
   /** Número de registro MTC del transportista (vacío si no aplica). */
   GRE_REGISTRO_MTC?: string;
   EMPRESA_JSON: string;
+  /** Token de dniruc.apisperu.com (registro gratuito) — proveedor principal. */
+  APISPERU_TOKEN?: string;
   /** Token opcional de apis.net.pe (v2); sin él se usa la v1 pública. */
   APIS_TOKEN?: string;
+  /** Workers AI (visión) para el escaneo asistido de notas en papel. */
+  AI?: { run(modelo: string, entrada: Record<string, unknown>): Promise<unknown> };
 }
 
 interface NuevoComprobanteBody {
@@ -244,6 +248,70 @@ app.post('/api/analizar-mensaje', async (c) => {
 });
 
 /**
+ * OCR asistido: recibe la foto de la nota (JPEG en base64, ya reducida por el
+ * cliente) y la transcribe con Workers AI (modelo de visión, capa gratuita
+ * diaria). El texto vuelve a la pantalla de importación, donde todo lo leído
+ * se confirma o corrige antes de emitir — el OCR nunca emite solo.
+ */
+app.post('/api/ocr', async (c) => {
+  if (!c.env.AI) return c.json({ error: 'El escaneo no está habilitado en este despliegue' }, 501);
+  const { imagen } = await c.req.json<{ imagen?: string }>().catch(() => ({}) as { imagen?: string });
+  if (!imagen) return c.json({ error: 'Falta la imagen' }, 400);
+  let bytes: Uint8Array;
+  try {
+    const bin = atob(imagen.replace(/^data:image\/[\w+.-]+;base64,/, ''));
+    bytes = Uint8Array.from(bin, (ch) => ch.charCodeAt(0));
+  } catch {
+    return c.json({ error: 'Imagen inválida' }, 400);
+  }
+  if (bytes.length > 2_500_000) return c.json({ error: 'La foto es demasiado grande; tómela de nuevo' }, 413);
+  const prompt =
+    'Transcribe TODO el texto visible en esta foto de una nota de venta peruana (puede estar escrita a mano). ' +
+    'Devuelve SOLO el texto transcrito, línea por línea tal como aparece, sin comentarios, títulos ni traducciones. ' +
+    'Copia con cuidado los números: DNI (8 dígitos), RUC (11 dígitos), cantidades y montos en soles.';
+  // Dos formatos de entrada según el modelo: "messages" (multimodales nuevos)
+  // y el clásico { prompt, image: bytes } de los modelos de visión antiguos.
+  const base64Limpia = imagen.replace(/^data:image\/[\w+.-]+;base64,/, '');
+  const conMensajes = {
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64Limpia}` } },
+        ],
+      },
+    ],
+    max_tokens: 512,
+  };
+  const clasico = { prompt, image: Array.from(bytes), max_tokens: 512 };
+  const candidatos: Array<[string, Record<string, unknown>]> = [
+    ['@cf/meta/llama-4-scout-17b-16e-instruct', conMensajes],
+    ['@cf/google/gemma-3-12b-it', conMensajes],
+    ['@cf/meta/llama-3.2-11b-vision-instruct', clasico],
+    ['@cf/llava-hf/llava-1.5-7b-hf', clasico],
+  ];
+  const errores: string[] = [];
+  for (const [modelo, entrada] of candidatos) {
+    try {
+      const r = (await c.env.AI.run(modelo, entrada)) as {
+        response?: string;
+        description?: string;
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const texto = (r.response ?? r.choices?.[0]?.message?.content ?? r.description ?? '').trim();
+      // Filtro anti-basura: exige letras de verdad (llava a veces repite dígitos).
+      const letras = (texto.match(/[a-záéíóúñü]/gi) ?? []).length;
+      if (texto && letras >= 3) return c.json({ texto, modelo });
+      if (texto) errores.push(`${modelo}: respuesta ilegible`);
+    } catch (e) {
+      errores.push(`${modelo}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return c.json({ error: 'No se pudo leer la foto. Escriba la nota en el recuadro.', detalle: errores }, 502);
+});
+
+/**
  * Consulta la razón social / nombre por RUC (11 dígitos) o DNI (8), con caché
  * en D1 para no depender del servicio externo en clientes repetidos.
  */
@@ -259,7 +327,23 @@ app.get('/api/consulta-doc', async (c) => {
     .first<{ nombre: string; direccion: string | null }>();
   if (cacheado) return c.json({ numero, nombre: cacheado.nombre, direccion: cacheado.direccion, fuente: 'cache' });
 
-  try {
+  // Proveedores en orden: apisperu (token propio) y apis.net.pe de respaldo.
+  const proveedores: Array<() => Promise<{ nombre: string; direccion: string | null; fuente: string }>> = [];
+  if (c.env.APISPERU_TOKEN) {
+    proveedores.push(async () => {
+      const res = await fetch(`https://dniruc.apisperu.com/api/v1/${tipo}/${numero}?token=${encodeURIComponent(c.env.APISPERU_TOKEN!)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const d = (await res.json()) as {
+        razonSocial?: string; direccion?: string;
+        nombres?: string; apellidoPaterno?: string; apellidoMaterno?: string; success?: boolean; message?: string;
+      };
+      if (d.success === false) throw new Error(d.message ?? 'no encontrado');
+      const nombre = tipo === 'ruc' ? d.razonSocial : [d.nombres, d.apellidoPaterno, d.apellidoMaterno].filter(Boolean).join(' ');
+      if (!nombre) throw new Error('sin nombre en la respuesta');
+      return { nombre, direccion: d.direccion ?? null, fuente: 'apisperu' };
+    });
+  }
+  proveedores.push(async () => {
     const cab: Record<string, string> = { Accept: 'application/json' };
     let url = `https://api.apis.net.pe/v1/${tipo}?numero=${numero}`;
     if (c.env.APIS_TOKEN) {
@@ -271,16 +355,23 @@ app.get('/api/consulta-doc', async (c) => {
     const d = (await res.json()) as { nombre?: string; nombreCompleto?: string; razonSocial?: string; direccion?: string };
     const nombre = d.nombre ?? d.razonSocial ?? d.nombreCompleto;
     if (!nombre) throw new Error('sin nombre en la respuesta');
-    await c.env.DB.prepare(
-      "INSERT INTO entidades (num_doc, tipo_doc, nombre, direccion, fuente) VALUES (?, ?, ?, ?, 'apis.net.pe') ON CONFLICT(num_doc) DO NOTHING",
-    )
-      .bind(numero, tipo === 'ruc' ? '6' : '1', nombre, d.direccion ?? null)
-      .run();
-    return c.json({ numero, nombre, direccion: d.direccion ?? null, fuente: 'apis.net.pe' });
-  } catch {
-    // El servicio externo falló o no conoce el documento: se escribe a mano.
-    return c.json({ numero, nombre: null, error: 'No se pudo consultar; escriba el nombre manualmente' }, 404);
+    return { nombre, direccion: d.direccion ?? null, fuente: 'apis.net.pe' };
+  });
+
+  for (const consultar of proveedores) {
+    try {
+      const r = await consultar();
+      await c.env.DB.prepare(
+        'INSERT INTO entidades (num_doc, tipo_doc, nombre, direccion, fuente) VALUES (?, ?, ?, ?, ?) ON CONFLICT(num_doc) DO NOTHING',
+      )
+        .bind(numero, tipo === 'ruc' ? '6' : '1', r.nombre, r.direccion, r.fuente)
+        .run();
+      return c.json({ numero, ...r });
+    } catch {
+      // probar el siguiente proveedor
+    }
   }
+  return c.json({ numero, nombre: null, error: 'No se pudo consultar; escriba el nombre manualmente' }, 404);
 });
 
 app.post('/api/comprobantes', async (c) => {

@@ -9,7 +9,7 @@ describe('analizador de mensajes de WhatsApp', () => {
     expect(a.nombre).toMatch(/El Rapido SAC/i);
     expect(a.cantidad).toBe(2);
     expect(a.montoTotalCentimos).toBe(6000);
-    expect(a.descripcion).toMatch(/pasajes pucallpa aguaytia/i);
+    expect(a.descripcion).toMatch(/^pasajes pucallpa aguaytia/i); // sin el "2" delante
     expect(a.faltantes).toEqual([]);
     expect(repartirMonto(a)).toEqual({ cantidad: 2, precioUnitarioCentimos: 3000 });
   });
@@ -110,7 +110,8 @@ describe('analizador de mensajes de WhatsApp', () => {
     expect(a.numDoc).toBe('10729755520');
     expect(a.items.length).toBe(2);
     const [ida, vuelta] = a.items;
-    expect(ida!.descripcion).toMatch(/pasajes pucallpa san alejandro/i);
+    expect(ida!.descripcion).toMatch(/^pasajes pucallpa san alejandro/i); // el "3" no va en la descripción
+    expect(vuelta!.descripcion).toMatch(/^pasajes san alejandro pucallpa/i);
     expect(ida!.cantidad).toBe(3);
     expect(ida!.montoPorUnidad).toBe(true);
     expect(ida!.montoTotalCentimos).toBe(15000); // 3 × 50
