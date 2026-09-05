@@ -631,6 +631,82 @@ function vistaEmitir(tipoOp) {
   };
 }
 
+/** Genera el comprobante como PDF (formato ticket de 80 mm) con su QR. */
+function generarPdfTicket(d, emp) {
+  const { jsPDF } = window.jspdf;
+  const W = 80, M = 6, ancho = W - 2 * M;
+  const items = d.items || [];
+  const titulo = d.tipo === '01' ? 'FACTURA ELECTRÓNICA' : d.tipo === '07' ? 'NOTA DE CRÉDITO ELECTRÓNICA' : 'BOLETA DE VENTA ELECTRÓNICA';
+  const doc = new jsPDF({ unit: 'mm', format: [W, 150 + items.length * 8] });
+  let y = 10;
+
+  const centro = (txt, size, negrita) => {
+    doc.setFontSize(size);
+    doc.setFont('helvetica', negrita ? 'bold' : 'normal');
+    const lineas = doc.splitTextToSize(txt, ancho);
+    doc.text(lineas, W / 2, y, { align: 'center' });
+    y += lineas.length * size * 0.42 + 1.2;
+  };
+  const parejas = (izq, der, size, negrita) => {
+    doc.setFontSize(size);
+    doc.setFont('helvetica', negrita ? 'bold' : 'normal');
+    const lineasIzq = doc.splitTextToSize(izq, ancho - 20);
+    doc.text(lineasIzq, M, y);
+    doc.text(der, W - M, y, { align: 'right' });
+    y += lineasIzq.length * size * 0.42 + 1.2;
+  };
+  const separador = () => {
+    doc.setDrawColor(160);
+    doc.setLineDashPattern([1, 1], 0);
+    doc.line(M, y, W - M, y);
+    doc.setLineDashPattern([], 0);
+    y += 3.2;
+  };
+
+  centro(emp.razonSocial, 11, true);
+  centro(`RUC ${emp.ruc}`, 9, false);
+  centro(`${emp.direccion} · ${emp.distrito} - ${emp.departamento}`, 7, false);
+  y += 1;
+  centro(titulo, 10, true);
+  centro(`${d.serie}-${d.correlativo}`, 11, true);
+  separador();
+  parejas('Fecha:', `${d.fecha_emision} ${d.hora_emision}`, 8, false);
+  parejas('Cliente:', '', 8, false);
+  centro(d.cliente_nombre, 8, false);
+  if (d.cliente_num_doc !== '-') parejas('Doc:', d.cliente_num_doc, 8, false);
+  separador();
+  for (const it of items) {
+    parejas(`${it.descripcion}${it.cantidad !== 1 ? ` x${it.cantidad}` : ''}`, S(Math.round(it.precio_unitario * it.cantidad)), 8, false);
+  }
+  separador();
+  if (Number(d.total_igv)) parejas('IGV 18%:', S(d.total_igv), 8, false);
+  parejas('TOTAL:', S(d.total), 11, true);
+  centro(d.leyenda, 7, false);
+  y += 2;
+
+  // QR reglamentario dibujado en un canvas y pegado como imagen.
+  try {
+    const qr = qrcode(0, 'M');
+    qr.addData(d.qr);
+    qr.make();
+    const n = qr.getModuleCount();
+    const celda = 4;
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = n * celda;
+    const cx = cv.getContext('2d');
+    cx.fillStyle = '#fff';
+    cx.fillRect(0, 0, cv.width, cv.height);
+    cx.fillStyle = '#000';
+    for (let f = 0; f < n; f++) for (let c = 0; c < n; c++) if (qr.isDark(f, c)) cx.fillRect(c * celda, f * celda, celda, celda);
+    doc.addImage(cv.toDataURL('image/png'), 'PNG', (W - 28) / 2, y, 28, 28);
+    y += 30;
+  } catch { /* sin QR el PDF sigue siendo válido como representación */ }
+
+  centro('Representación impresa del comprobante electrónico.', 6.5, false);
+  centro(`Hash: ${d.hash_firma || ''}`, 6.5, false);
+  return doc.output('blob');
+}
+
 async function vistaTicket(id) {
   $app.innerHTML = '<p class="cargando">Cargando ticket…</p>';
   const d = await api(`/api/comprobantes/${id}`);
@@ -674,8 +750,23 @@ async function vistaTicket(id) {
       <div class="centro leyenda">Representación impresa del comprobante electrónico.<br>Hash: ${esc(d.hash_firma || '')}</div>
     </div>
     <div class="acciones-ticket no-imprimir">
-      <button id="compartir">📲 Compartir</button>
+      <button id="compartir">📲 Enviar por WhatsApp</button>
       <button class="boton-linea" id="imprimir">🖨️ Imprimir</button>
+      <div class="ancho" id="panelWa" hidden>
+        <div class="tarjeta" style="margin:0">
+          <h2 style="margin-top:0">Enviar el comprobante en PDF</h2>
+          <button id="waPdf" style="width:100%">📄 Compartir PDF → elegir chofer o cliente</button>
+          <p class="ayuda">Se abre la lista para compartir: elija WhatsApp y el contacto; el PDF ya va adjunto. En computadora, el PDF se descarga para adjuntarlo.</p>
+          <hr style="border:none;border-top:1.5px dashed var(--linea);margin:14px 0">
+          <label for="waNum">¿Es un número nuevo que no es contacto? (del papelito)</label>
+          <div class="fila">
+            <input id="waNum" inputmode="numeric" maxlength="9" placeholder="9XXXXXXXX">
+            <button class="boton-suave" id="waAbrir" style="flex:0 0 auto">1º Abrir chat</button>
+          </div>
+          <p class="ayuda">Se abre el chat con ese número sin agregarlo como contacto. Luego regrese y toque <b>Compartir PDF</b>: ese chat aparecerá primero en WhatsApp.</p>
+          <div id="waRecientes" class="sugerencias"></div>
+        </div>
+      </div>
       ${d.anulado_por && d.anuladoPor ? `
         <a class="boton boton-suave ancho" href="#ticket/${d.anuladoPor.id}">Ver nota de crédito ${d.anuladoPor.serie}-${d.anuladoPor.correlativo}</a>` : ''}
       ${(d.tipo === '01' || d.tipo === '03') && !d.anulado_por && d.estado !== 'rechazado' ? `
@@ -727,16 +818,53 @@ async function vistaTicket(id) {
       }
     };
   }
-  document.getElementById('compartir').onclick = async () => {
-    const texto =
-      `${emp.razonSocial}\n${titulo} ${d.serie}-${d.correlativo}\n` +
-      `Fecha: ${d.fecha_emision}\nTotal: ${S(d.total)}\n${d.leyenda}`;
-    if (navigator.share) {
-      try { await navigator.share({ title: `${d.serie}-${d.correlativo}`, text: texto }); } catch { /* cancelado */ }
+  // ---- Envío por WhatsApp: el comprobante viaja como PDF ----
+  const saludoWa = `Le enviamos su comprobante *${d.serie}-${d.correlativo}* de ${emp.razonSocial}. Total: *${S(d.total)}*`;
+
+  const recientesWa = () => {
+    try { return JSON.parse(localStorage.getItem('wa:recientes')) || []; } catch { return []; }
+  };
+  const abrirChatWa = (num) => {
+    const lista = [{ num, nombre: d.cliente_nombre !== 'CLIENTES VARIOS' ? d.cliente_nombre : '' },
+      ...recientesWa().filter((r) => r.num !== num)].slice(0, 6);
+    localStorage.setItem('wa:recientes', JSON.stringify(lista));
+    window.open(`https://wa.me/51${num}?text=${encodeURIComponent(saludoWa)}`, '_blank');
+  };
+
+  const compartirPdf = async () => {
+    const archivo = new File([generarPdfTicket(d, emp)], `${d.serie}-${d.correlativo}.pdf`, { type: 'application/pdf' });
+    if (navigator.canShare && navigator.canShare({ files: [archivo] })) {
+      try { await navigator.share({ files: [archivo], title: `${d.serie}-${d.correlativo}` }); } catch { /* cancelado */ }
     } else {
-      await navigator.clipboard.writeText(texto);
-      alert('Copiado al portapapeles');
+      // PC u otro navegador: se descarga y se adjunta a mano.
+      const url = URL.createObjectURL(archivo);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = archivo.name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
     }
+  };
+
+  const pintaRecientes = () => {
+    const lista = recientesWa();
+    document.getElementById('waRecientes').innerHTML = lista.length
+      ? `<p class="ayuda" style="width:100%;margin:0 0 4px">Chats recientes (abre el chat; luego comparta el PDF):</p>` +
+        lista.map((r) => `<button type="button" data-num="${r.num}">📞 ${r.num}${r.nombre ? ` · ${esc(r.nombre.split(' ').slice(0, 2).join(' '))}` : ''}</button>`).join('')
+      : '';
+    document.querySelectorAll('#waRecientes button').forEach((b) => { b.onclick = () => abrirChatWa(b.dataset.num); });
+  };
+
+  document.getElementById('compartir').onclick = () => {
+    const p = document.getElementById('panelWa');
+    p.hidden = !p.hidden;
+    if (!p.hidden) pintaRecientes();
+  };
+  document.getElementById('waPdf').onclick = compartirPdf;
+  document.getElementById('waAbrir').onclick = () => {
+    const num = document.getElementById('waNum').value.trim();
+    if (!/^9\d{8}$/.test(num)) { alert('El número debe tener 9 dígitos y empezar con 9 (ej. 961234567)'); return; }
+    abrirChatWa(num);
   };
 }
 

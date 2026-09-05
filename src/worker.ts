@@ -98,6 +98,88 @@ const app = new Hono<{ Bindings: Env }>();
 
 app.get('/api/salud', (c) => c.json({ ok: true }));
 
+/** Código del enlace público: derivado del hash de la firma, no adivinable. */
+function tokenPublico(hashFirma: string | null): string {
+  return (hashFirma ?? '').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
+}
+
+/**
+ * Vista PÚBLICA del comprobante (sin clave): el cliente recibe este enlace por
+ * WhatsApp, ve la representación del comprobante con su QR y puede guardarla
+ * como PDF con el botón imprimir del navegador. El token del enlace sale del
+ * hash de la firma digital, así que no se puede adivinar.
+ */
+app.get('/ver/:id/:token', async (c) => {
+  const id = Number(c.req.param('id'));
+  const row = await c.env.DB.prepare('SELECT * FROM comprobantes WHERE id = ?').bind(id).first<Record<string, unknown>>();
+  if (!row || !c.req.param('token') || c.req.param('token') !== tokenPublico(row.hash_firma as string | null)) {
+    return c.html('<meta charset="utf-8"><p style="font-family:sans-serif;text-align:center;margin-top:40px">Comprobante no encontrado.</p>', 404);
+  }
+  const { results: items } = await c.env.DB.prepare(
+    'SELECT descripcion, cantidad, precio_unitario FROM comprobante_items WHERE comprobante_id = ?',
+  )
+    .bind(id)
+    .all<Record<string, unknown>>();
+  const e = empresa(c.env);
+  const qr = textoQr({
+    rucEmisor: e.ruc,
+    tipo: String(row.tipo),
+    serie: String(row.serie),
+    correlativo: Number(row.correlativo),
+    igvCentimos: Number(row.total_igv),
+    totalCentimos: Number(row.total),
+    fechaEmision: String(row.fecha_emision),
+    clienteTipoDoc: String(row.cliente_tipo_doc),
+    clienteNumDoc: String(row.cliente_num_doc),
+  });
+  const titulo = row.tipo === '01' ? 'FACTURA ELECTRÓNICA' : row.tipo === '07' ? 'NOTA DE CRÉDITO ELECTRÓNICA' : 'BOLETA DE VENTA ELECTRÓNICA';
+  const esc = (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const filas = items
+    .map(
+      (it) =>
+        `<div class="linea"><span>${esc(it.descripcion)}${Number(it.cantidad) !== 1 ? ` x${esc(it.cantidad)}` : ''}</span><span>S/ ${fmt(Math.round(Number(it.precio_unitario) * Number(it.cantidad)))}</span></div>`,
+    )
+    .join('');
+  return c.html(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(row.serie)}-${esc(row.correlativo)} · ${esc(e.razonSocial)}</title>
+<style>
+  body{margin:0;background:#f2f4f7;color:#101828;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:15px;padding:20px}
+  .t{background:#fff;border-radius:18px;box-shadow:0 1px 2px rgba(16,24,40,.06),0 6px 16px rgba(16,24,40,.06);max-width:380px;margin:0 auto;padding:24px}
+  .c{text-align:center}.emp{font-weight:800;font-size:1.05rem}
+  .dt{font-weight:800;margin:12px auto 4px;background:#e3f5ee;color:#006c48;border-radius:999px;padding:6px 16px;display:inline-block;font-size:.85rem}
+  hr{border:none;border-top:1.5px dashed #eaecf0;margin:12px 0}
+  .linea{display:flex;justify-content:space-between;gap:8px;margin:2px 0}
+  .tot{font-size:1.25rem;font-weight:800}.g{color:#667085;font-size:.78rem}
+  .qr{display:flex;justify-content:center;margin:14px 0 6px}.qr svg{width:148px;height:148px}
+  .b{display:block;max-width:380px;margin:14px auto 0;background:#00875a;color:#fff;text-align:center;text-decoration:none;font-weight:800;padding:14px;border-radius:14px;border:none;font-size:1rem;width:100%;cursor:pointer}
+  @media print{.b{display:none}body{background:#fff;padding:0}.t{box-shadow:none;max-width:none}}
+</style></head><body>
+<div class="t">
+  <div class="c">
+    <div class="emp">${esc(e.razonSocial)}</div>
+    <div>RUC ${esc(e.ruc)}</div>
+    <div class="g">${esc(e.direccion)} · ${esc(e.distrito)} - ${esc(e.departamento)}</div>
+    <div class="dt">${titulo}<br>${esc(row.serie)}-${esc(row.correlativo)}</div>
+  </div>
+  <hr>
+  <div class="linea"><span>Fecha:</span><span>${esc(row.fecha_emision)} ${esc(row.hora_emision)}</span></div>
+  <div class="linea"><span>Cliente:</span><span>${esc(row.cliente_nombre)}</span></div>
+  ${row.cliente_num_doc !== '-' ? `<div class="linea"><span>Doc:</span><span>${esc(row.cliente_num_doc)}</span></div>` : ''}
+  <hr>
+  ${filas}
+  <hr>
+  ${Number(row.total_igv) ? `<div class="linea"><span>IGV 18%:</span><span>S/ ${fmt(Number(row.total_igv))}</span></div>` : ''}
+  <div class="linea tot"><span>TOTAL:</span><span>S/ ${fmt(Number(row.total))}</span></div>
+  <div class="g">${esc(row.leyenda)}</div>
+  <div class="qr" id="qr"></div>
+  <div class="c g">Representación impresa del comprobante electrónico.<br>Hash: ${esc(row.hash_firma)}</div>
+</div>
+<button class="b" onclick="window.print()">🖨️ Imprimir o guardar como PDF</button>
+<script src="/vendor/qrcode.js"></script>
+<script>try{var q=qrcode(0,'M');q.addData(${JSON.stringify(qr)});q.make();document.getElementById('qr').innerHTML=q.createSvgTag({cellSize:4,margin:0});}catch(e){}</script>
+</body></html>`);
+});
+
 // Toda la API (salvo salud) exige la clave de la app.
 app.use('/api/*', async (c, next) => {
   if (c.req.path === '/api/salud') return next();
@@ -394,7 +476,8 @@ app.get('/api/comprobantes/:id', async (c) => {
     clienteTipoDoc: String(row.cliente_tipo_doc),
     clienteNumDoc: String(row.cliente_num_doc),
   });
-  return c.json({ ...row, items, qr, empresa: e, referencia, anuladoPor });
+  const enlacePublico = `${new URL(c.req.url).origin}/ver/${id}/${tokenPublico(row.hash_firma as string | null)}`;
+  return c.json({ ...row, items, qr, empresa: e, referencia, anuladoPor, enlacePublico });
 });
 
 // Exportación CSV para la computadora (rango de fechas).
