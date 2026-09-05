@@ -828,60 +828,116 @@ async function pasoDetalleManual(estado, nav) {
   pintaZona();
 }
 
-/** Genera el comprobante como PDF (formato ticket de 80 mm) con su QR. */
+/** Genera el comprobante como PDF (ticket de 80 mm) con jerarquía y aire. */
 function generarPdfTicket(d, emp) {
   const { jsPDF } = window.jspdf;
-  const W = 80, M = 6, ancho = W - 2 * M;
+  const W = 80, M = 5, ancho = W - 2 * M;
   const items = d.items || [];
   const titulo = d.tipo === '01' ? 'FACTURA ELECTRÓNICA' : d.tipo === '07' ? 'NOTA DE CRÉDITO ELECTRÓNICA' : 'BOLETA DE VENTA ELECTRÓNICA';
-  const doc = new jsPDF({ unit: 'mm', format: [W, 150 + items.length * 8] });
+  const GRIS = 115, NEGRO = 25;
+  // Dos pasadas: la primera mide cuánto papel se usa y la segunda genera el
+  // PDF al alto exacto (sin cola blanca al final).
+  const dibujar = (doc) => {
   let y = 10;
 
-  const centro = (txt, size, negrita) => {
+  const fuente = (size, negrita, gris, cursiva) => {
+    doc.setFont('helvetica', cursiva ? 'italic' : negrita ? 'bold' : 'normal');
     doc.setFontSize(size);
-    doc.setFont('helvetica', negrita ? 'bold' : 'normal');
-    const lineas = doc.splitTextToSize(txt, ancho);
+    doc.setTextColor(gris ? GRIS : NEGRO);
+  };
+  const centro = (txt, size, negrita, gris, cursiva) => {
+    fuente(size, negrita, gris, cursiva);
+    const lineas = doc.splitTextToSize(String(txt), ancho);
     doc.text(lineas, W / 2, y, { align: 'center' });
     y += lineas.length * size * 0.42 + 1.2;
   };
-  const parejas = (izq, der, size, negrita) => {
-    doc.setFontSize(size);
-    doc.setFont('helvetica', negrita ? 'bold' : 'normal');
-    const lineasIzq = doc.splitTextToSize(izq, ancho - 20);
-    doc.text(lineasIzq, M, y);
-    doc.text(der, W - M, y, { align: 'right' });
-    y += lineasIzq.length * size * 0.42 + 1.2;
-  };
-  const separador = () => {
-    doc.setDrawColor(160);
-    doc.setLineDashPattern([1, 1], 0);
+  const linea = (tono, grosor) => {
+    doc.setDrawColor(tono);
+    doc.setLineWidth(grosor || 0.2);
     doc.line(M, y, W - M, y);
-    doc.setLineDashPattern([], 0);
-    y += 3.2;
+    y += 3;
   };
 
-  centro(emp.razonSocial, 11, true);
-  centro(`RUC ${emp.ruc}`, 9, false);
-  centro(`${emp.direccion} · ${emp.distrito} - ${emp.departamento}`, 7, false);
-  y += 1;
-  centro(titulo, 10, true);
-  centro(`${d.serie}-${d.correlativo}`, 11, true);
-  separador();
-  parejas('Fecha:', `${d.fecha_emision} ${d.hora_emision}`, 8, false);
-  parejas('Cliente:', '', 8, false);
-  centro(d.cliente_nombre, 8, false);
-  if (d.cliente_num_doc !== '-') parejas('Doc:', d.cliente_num_doc, 8, false);
-  separador();
-  for (const it of items) {
-    parejas(`${it.descripcion}${it.cantidad !== 1 ? ` x${it.cantidad}` : ''}`, S(Math.round(it.precio_unitario * it.cantidad)), 8, false);
-  }
-  separador();
-  if (Number(d.total_igv)) parejas('IGV 18%:', S(d.total_igv), 8, false);
-  parejas('TOTAL:', S(d.total), 11, true);
-  centro(d.leyenda, 7, false);
-  y += 2;
+  // --- Cabecera del emisor ---
+  centro(emp.razonSocial, 10.5, true);
+  centro(`RUC ${emp.ruc}`, 8.5);
+  centro(emp.direccion, 6.8, false, true);
+  centro(`${emp.distrito} · ${emp.provincia} · ${emp.departamento}`, 6.8, false, true);
+  y += 1.5;
 
-  // QR reglamentario dibujado en un canvas y pegado como imagen.
+  // --- Recuadro con el tipo y número ---
+  doc.setDrawColor(NEGRO);
+  doc.setLineWidth(0.35);
+  doc.roundedRect(M, y - 3.5, ancho, 12.5, 1.6, 1.6);
+  centro(titulo, 8, true);
+  centro(`${d.serie}-${d.correlativo}`, 11.5, true);
+  y += 3;
+
+  // --- Datos del comprobante (etiqueta gris + valor) ---
+  const dato = (etq, val) => {
+    fuente(7.2, false, true);
+    doc.text(etq, M, y);
+    fuente(7.6);
+    const lineas = doc.splitTextToSize(String(val), ancho - 15);
+    doc.text(lineas, M + 15, y);
+    y += lineas.length * 3.3 + 0.9;
+  };
+  dato('Fecha', `${d.fecha_emision}   ${d.hora_emision}`);
+  dato('Cliente', d.cliente_nombre);
+  if (d.cliente_num_doc !== '-') dato(d.cliente_tipo_doc === '6' ? 'RUC' : 'DNI', d.cliente_num_doc);
+  if (d.referencia) {
+    dato('Modifica', `${d.referencia.tipo === '01' ? 'FACTURA' : 'BOLETA'} ${d.referencia.serie}-${d.referencia.correlativo}`);
+    if (d.motivo_nota) dato('Motivo', d.motivo_nota);
+  }
+  y += 0.8;
+
+  // --- Tabla de productos ---
+  fuente(6.5, true, true);
+  doc.text('CANT.', M, y);
+  doc.text('DESCRIPCIÓN', M + 11, y);
+  doc.text('IMPORTE', W - M, y, { align: 'right' });
+  y += 1.8;
+  linea(150, 0.3);
+  for (const it of items) {
+    fuente(7.8);
+    const lineasDesc = doc.splitTextToSize(String(it.descripcion), ancho - 27);
+    doc.text(String(it.cantidad), M + 2.5, y, { align: 'center' });
+    doc.text(lineasDesc, M + 11, y);
+    doc.text(S(Math.round(it.precio_unitario * it.cantidad)), W - M, y, { align: 'right' });
+    y += lineasDesc.length * 3.4;
+    if (it.cantidad !== 1) {
+      fuente(6.4, false, true);
+      doc.text(`${it.cantidad} × S/ ${(it.precio_unitario / 100).toFixed(2)} c/u`, M + 11, y);
+      y += 3;
+    }
+    y += 1.1;
+  }
+  linea(150, 0.3);
+
+  // --- Totales ---
+  const tot = (etq, val) => {
+    fuente(7.2, false, true);
+    doc.text(etq, W - M - 22, y, { align: 'right' });
+    fuente(7.6);
+    doc.text(val, W - M, y, { align: 'right' });
+    y += 4;
+  };
+  if (Number(d.total_gravado)) tot('Op. gravadas', S(d.total_gravado));
+  if (Number(d.total_exonerado)) tot('Op. exoneradas', S(d.total_exonerado));
+  if (Number(d.total_inafecto)) tot('Op. inafectas', S(d.total_inafecto));
+  if (Number(d.total_igv)) tot('IGV 18%', S(d.total_igv));
+
+  // Banda gris con el TOTAL bien grande.
+  doc.setFillColor(235, 235, 235);
+  doc.roundedRect(M, y - 3.2, ancho, 8, 1.2, 1.2, 'F');
+  fuente(10, true);
+  doc.text('TOTAL', M + 2.5, y + 2);
+  doc.text(S(d.total), W - M - 2.5, y + 2, { align: 'right' });
+  y += 9;
+  centro(d.leyenda || '', 6.6, false, true, true);
+  y += 1.5;
+
+  // --- QR reglamentario, centrado y con su pie ---
   try {
     const qr = qrcode(0, 'M');
     qr.addData(d.qr);
@@ -895,12 +951,20 @@ function generarPdfTicket(d, emp) {
     cx.fillRect(0, 0, cv.width, cv.height);
     cx.fillStyle = '#000';
     for (let f = 0; f < n; f++) for (let c = 0; c < n; c++) if (qr.isDark(f, c)) cx.fillRect(c * celda, f * celda, celda, celda);
-    doc.addImage(cv.toDataURL('image/png'), 'PNG', (W - 28) / 2, y, 28, 28);
-    y += 30;
+    doc.addImage(cv.toDataURL('image/png'), 'PNG', (W - 26) / 2, y, 26, 26);
+    y += 28.5;
   } catch { /* sin QR el PDF sigue siendo válido como representación */ }
 
-  centro('Representación impresa del comprobante electrónico.', 6.5, false);
-  centro(`Hash: ${d.hash_firma || ''}`, 6.5, false);
+  centro('Representación impresa del comprobante electrónico.', 6.2, false, true);
+  centro('Consulte el documento con el código QR o en SUNAT.', 6.2, false, true);
+  if (d.hash_firma) centro(`Hash: ${d.hash_firma}`, 5.8, false, true);
+  return y;
+  };
+
+  const medida = new jsPDF({ unit: 'mm', format: [W, 600] });
+  const alto = dibujar(medida) + 3;
+  const doc = new jsPDF({ unit: 'mm', format: [W, alto] });
+  dibujar(doc);
   return doc.output('blob');
 }
 
