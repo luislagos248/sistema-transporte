@@ -156,7 +156,7 @@ async function vistaImportar() {
     <div class="tarjeta">
       <label for="txtMsg">Mensaje de WhatsApp o nota</label>
       <textarea id="txtMsg" rows="7" style="width:100%;font:inherit;padding:14px;border:1.5px solid transparent;border-radius:12px;background:var(--campo);resize:vertical">${esc(compartido)}</textarea>
-      <p class="ayuda">Desde WhatsApp: mantenga presionado el mensaje → Compartir → <b>Turismo Irazola</b> (con la app instalada). También puede copiar y pegar aquí. Si mandaron los datos en varios mensajes, péguelos todos juntos.</p>
+      <p class="ayuda">Desde WhatsApp: mantenga presionado el mensaje → Compartir → <b>Turismo Irazola</b> (con la app instalada desde Chrome). También puede copiar y pegar aquí. Cada línea del mensaje es un producto distinto; si mandaron varios mensajes, péguelos todos juntos.</p>
       <br>
       <button class="boton-grande" id="analizar">🔍 Analizar mensaje</button>
     </div>
@@ -166,6 +166,21 @@ async function vistaImportar() {
 
   const $res = document.getElementById('resultado');
 
+  const filaItem = (it, i) => {
+    const marca = (cond) => (cond ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : '');
+    const r = it && it.reparto ? it.reparto : { cantidad: (it && it.cantidad) || 1, precioUnitarioCentimos: null };
+    const falta = (c) => it && it.faltantes && it.faltantes.includes(c);
+    return `
+      <div class="item-import" data-i="${i}" style="border-top:1.5px dashed var(--linea);padding-top:12px;margin-top:12px">
+        <label>Producto ${i + 1} — descripción</label>
+        <input id="impDesc_${i}" value="${esc((it && it.descripcion) || '')}" ${marca(falta('descripcion'))}>
+        <div class="fila">
+          <div><label>Cantidad</label><input id="impCant_${i}" inputmode="numeric" value="${r.cantidad}"></div>
+          <div><label>Precio c/u (S/)</label><input id="impMonto_${i}" class="monto" inputmode="decimal" value="${r.precioUnitarioCentimos ? (r.precioUnitarioCentimos / 100).toFixed(2) : ''}" ${marca(falta('monto'))}></div>
+        </div>
+      </div>`;
+  };
+
   const analizar = async () => {
     const texto = document.getElementById('txtMsg').value.trim();
     if (!texto) { $res.innerHTML = '<div class="tarjeta"><p class="error">Pegue o comparta primero el mensaje.</p></div>'; return; }
@@ -174,15 +189,14 @@ async function vistaImportar() {
     try { a = await api('/api/analizar-mensaje', { method: 'POST', body: JSON.stringify({ texto }) }); }
     catch (e) { $res.innerHTML = `<div class="tarjeta"><p class="error">${esc(e.message)}</p></div>`; return; }
 
-    const falta = (campo) => a.faltantes.includes(campo);
-    const marca = (cond) => (cond ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : '');
+    const faltaDoc = a.faltantes.includes('documento');
+    const hayFaltantes = faltaDoc || a.items.some((it) => it.faltantes.length);
     const tipoCpe = a.tipoDoc === '6' ? 'factura' : 'boleta';
-    const reparto = a.reparto || { cantidad: a.cantidad || 1, precioUnitarioCentimos: null };
 
     $res.innerHTML = `
     <div class="tarjeta">
-      <h2 style="margin-top:0">Datos detectados</h2>
-      ${a.faltantes.length ? `<p class="error">Falta confirmar: ${a.faltantes.map((f) => ({ documento: 'el DNI/RUC', monto: 'el monto', descripcion: 'la descripción' })[f] || f).join(', ')}. Pregunte al cliente y complete abajo.</p>` : '<p class="ayuda">Revise que todo esté correcto y emita.</p>'}
+      <h2 style="margin-top:0">Datos detectados · ${a.items.length} producto${a.items.length === 1 ? '' : 's'}</h2>
+      ${hayFaltantes ? '<p class="error">Hay datos por confirmar (marcados en ámbar). Pregunte al cliente y complete.</p>' : '<p class="ayuda">Revise que todo esté correcto y emita.</p>'}
       ${a.avisos.map((v) => `<p class="ayuda">ℹ️ ${esc(v)}</p>`).join('')}
 
       <div class="conmutador" id="impTipo">
@@ -195,18 +209,15 @@ async function vistaImportar() {
       </div>
 
       <label>DNI o RUC del cliente</label>
-      <input id="impDoc" inputmode="numeric" maxlength="11" value="${esc(a.numDoc || '')}" ${marca(falta('documento'))}>
+      <input id="impDoc" inputmode="numeric" maxlength="11" value="${esc(a.numDoc || '')}" ${faltaDoc ? 'style="box-shadow:0 0 0 2.5px var(--ambar)"' : ''}>
       <label>Nombre / Razón social</label>
       <input id="impNombre" value="${esc(a.nombre || '')}" placeholder="Se busca solo al poner el documento">
       <p class="ayuda" id="impBusqueda"></p>
 
-      <label>Descripción</label>
-      <input id="impDesc" value="${esc(a.descripcion || '')}" ${marca(falta('descripcion'))}>
-      <div class="fila">
-        <div><label>Cantidad</label><input id="impCant" inputmode="numeric" value="${reparto.cantidad}"></div>
-        <div><label>Monto TOTAL (S/)</label><input id="impMonto" class="monto" inputmode="decimal" value="${a.montoTotalCentimos ? (a.montoTotalCentimos / 100).toFixed(2) : ''}" ${marca(falta('monto'))}></div>
-      </div>
-      <label><input type="checkbox" id="impIgv" style="width:auto"> Operación con IGV (18%)</label>
+      <div id="impItems">${a.items.map((it, i) => filaItem(it, i)).join('')}</div>
+      <button class="boton-suave" id="impMasItem" style="width:100%;margin-top:10px">➕ Agregar otro producto</button>
+
+      <label style="margin-top:14px"><input type="checkbox" id="impIgv" style="width:auto"> Operación con IGV (18%)</label>
       <p class="error" id="impErr" hidden></p>
       <br>
       <button class="boton-grande" id="impEmitir">EMITIR</button>
@@ -220,7 +231,12 @@ async function vistaImportar() {
     seg('impTipo');
     seg('impRubro');
 
-    // Consulta automática del nombre por RUC/DNI (con caché en el servidor).
+    let numItems = a.items.length;
+    document.getElementById('impMasItem').onclick = () => {
+      document.getElementById('impItems').insertAdjacentHTML('beforeend', filaItem(null, numItems));
+      numItems++;
+    };
+
     const buscarNombre = async () => {
       const doc = document.getElementById('impDoc').value.trim();
       if (!/^\d{8}$|^\d{11}$/.test(doc)) return;
@@ -247,11 +263,21 @@ async function vistaImportar() {
         const rubro = document.querySelector('#impRubro button.activa').dataset.v;
         const doc = document.getElementById('impDoc').value.trim();
         const nombre = document.getElementById('impNombre').value.trim();
-        const descr = document.getElementById('impDesc').value.trim();
-        const cantidad = Math.max(1, parseInt(document.getElementById('impCant').value || '1', 10));
-        const montoTotal = montoACentimos(document.getElementById('impMonto').value);
-        if (!descr) throw new Error('Falta la descripción');
-        if (montoTotal === null || montoTotal <= 0) throw new Error('Falta el monto (pregunte al cliente)');
+
+        const itemsEmitir = [];
+        for (let i = 0; i < numItems; i++) {
+          const el = document.getElementById(`impDesc_${i}`);
+          if (!el) continue;
+          const descr = el.value.trim();
+          const monto = montoACentimos(document.getElementById(`impMonto_${i}`).value);
+          const cant = Math.max(1, parseInt(document.getElementById(`impCant_${i}`).value || '1', 10));
+          if (!descr && monto === null) continue; // fila vacía agregada de más
+          if (!descr) throw new Error(`Falta la descripción del producto ${i + 1}`);
+          if (monto === null || monto <= 0) throw new Error(`Falta el precio del producto ${i + 1} (pregunte al cliente)`);
+          itemsEmitir.push({ descripcion: descr, montoCentimos: monto, cantidad: cant, afectacion: document.getElementById('impIgv').checked ? '10' : '20' });
+        }
+        if (!itemsEmitir.length) throw new Error('No hay productos para emitir');
+
         let cliente;
         if (tipo === 'factura') {
           if (!/^\d{11}$/.test(doc)) throw new Error('La factura necesita RUC de 11 dígitos');
@@ -262,19 +288,11 @@ async function vistaImportar() {
         } else {
           cliente = { tipoDoc: '0', numDoc: '-', nombre: 'CLIENTES VARIOS' };
         }
-        // Reparto exacto: si el total no divide entre la cantidad, va 1 ítem por el total.
-        let cant = cantidad, unit = montoTotal;
-        if (cantidad > 1 && montoTotal % cantidad === 0) unit = montoTotal / cantidad;
-        else cant = 1;
         boton.disabled = true;
         boton.textContent = 'Emitiendo…';
         const res = await api('/api/comprobantes', {
           method: 'POST',
-          body: JSON.stringify({
-            serie: SERIES[rubro][tipo],
-            cliente,
-            items: [{ descripcion: descr, montoCentimos: unit, cantidad: cant, afectacion: document.getElementById('impIgv').checked ? '10' : '20' }],
-          }),
+          body: JSON.stringify({ serie: SERIES[rubro][tipo], cliente, items: itemsEmitir }),
         });
         location.hash = `#ticket/${res.id}`;
       } catch (e) {
@@ -288,169 +306,6 @@ async function vistaImportar() {
 
   document.getElementById('analizar').onclick = analizar;
   if (compartido) analizar();
-}
-
-/* ---------- Guía de Remisión Transportista ---------- */
-
-const ESTADOS_GUIA = {
-  pendiente: { clase: 'pendiente', texto: 'Emitida ✔ · envío a SUNAT en curso' },
-  enviada:   { clase: 'pendiente', texto: 'Enviada · esperando respuesta de SUNAT' },
-  aceptada:  { clase: 'aceptado',  texto: 'Aceptada por SUNAT' },
-  rechazada: { clase: 'rechazado', texto: 'Rechazada — revisar' },
-};
-
-async function vistaGuiaNueva() {
-  const rec = await api('/api/guias/recursos');
-  const hoy = hoyLima();
-  const emp = rec.empresa;
-
-  $app.innerHTML = `
-    <h1>🚚 Guía de carga (GRE Transportista)</h1>
-    <div class="dos-columnas">
-    <div>
-    <div class="tarjeta">
-      <h2 style="margin-top:0">Remitente (quien envía)</h2>
-      <div class="fila">
-        <div><label>RUC o DNI</label><input id="remDoc" inputmode="numeric" maxlength="11"></div>
-        <div><label>Nombre / Razón social</label><input id="remNombre"></div>
-      </div>
-      <h2>Destinatario (quien recibe)</h2>
-      <div class="fila">
-        <div><label>RUC o DNI</label><input id="desDoc" inputmode="numeric" maxlength="11"></div>
-        <div><label>Nombre</label><input id="desNombre"></div>
-      </div>
-      <h2>Carga</h2>
-      <label>Descripción de los bienes</label>
-      <input id="bienDesc" placeholder="Ej: 2 cajas de repuestos">
-      <div class="fila">
-        <div><label>Cantidad (bultos)</label><input id="bienCant" inputmode="numeric" value="1"></div>
-        <div><label>Peso total (kg)</label><input id="pesoKg" inputmode="decimal" placeholder="10"></div>
-      </div>
-    </div>
-    </div>
-    <div>
-    <div class="tarjeta">
-      <h2 style="margin-top:0">Traslado</h2>
-      <div class="fila">
-        <div><label>Placa del vehículo</label><input id="placa" list="dlPlacas" style="text-transform:uppercase"></div>
-        <div><label>Fecha de traslado</label><input id="fecTraslado" type="date" value="${hoy}"></div>
-      </div>
-      <datalist id="dlPlacas">${rec.vehiculos.map((v) => `<option value="${esc(v.placa)}">`).join('')}</datalist>
-      <label>Conductor (DNI)</label>
-      <input id="conDoc" list="dlConductores" inputmode="numeric" maxlength="8">
-      <datalist id="dlConductores">${rec.conductores.map((x) => `<option value="${esc(x.num_doc)}">${esc(x.nombres)} ${esc(x.apellidos)}</option>`).join('')}</datalist>
-      <div class="fila">
-        <div><label>Nombres</label><input id="conNombres"></div>
-        <div><label>Apellidos</label><input id="conApellidos"></div>
-      </div>
-      <label>Licencia de conducir</label>
-      <input id="conLicencia" style="text-transform:uppercase">
-      <h2>Ruta</h2>
-      <label>Punto de partida (ubigeo y dirección)</label>
-      <div class="fila">
-        <div style="flex:0 0 110px"><input id="parUbigeo" inputmode="numeric" maxlength="6" value="${esc(emp.ubigeo)}"></div>
-        <div><input id="parDir" value="${esc(emp.direccion)}"></div>
-      </div>
-      <label>Punto de llegada (ubigeo y dirección)</label>
-      <div class="fila">
-        <div style="flex:0 0 110px"><input id="lleUbigeo" inputmode="numeric" maxlength="6" placeholder="250101"></div>
-        <div><input id="lleDir" placeholder="Dirección de entrega"></div>
-      </div>
-      <p class="ayuda">El ubigeo es el código de 6 dígitos del distrito (ej. 250101 Callería). Los usados quedan guardados como sugerencia.</p>
-      <p class="error" id="errG" hidden></p>
-      <button class="boton-grande" id="emitirGuia">EMITIR GUÍA</button>
-    </div>
-    </div>
-    </div>`;
-
-  // Autocompletar conductor al elegir un DNI conocido.
-  document.getElementById('conDoc').addEventListener('change', (ev) => {
-    const c0 = rec.conductores.find((x) => x.num_doc === ev.target.value);
-    if (c0) {
-      document.getElementById('conNombres').value = c0.nombres;
-      document.getElementById('conApellidos').value = c0.apellidos;
-      document.getElementById('conLicencia').value = c0.licencia;
-    }
-  });
-
-  // Recordar la última llegada usada.
-  try {
-    const ult = JSON.parse(localStorage.getItem('gre:llegada') || 'null');
-    if (ult) { document.getElementById('lleUbigeo').value = ult.ubigeo; document.getElementById('lleDir').value = ult.direccion; }
-  } catch { /* sin valor guardado */ }
-
-  document.getElementById('emitirGuia').onclick = async (ev) => {
-    const boton = ev.target;
-    const $e = document.getElementById('errG');
-    $e.hidden = true;
-    const v = (id) => document.getElementById(id).value.trim();
-    try {
-      const docParte = (doc, nombre, quien) => {
-        if (!/^\d{8}$|^\d{11}$/.test(doc)) throw new Error(`El documento del ${quien} debe ser DNI (8) o RUC (11)`);
-        if (!nombre) throw new Error(`Falta el nombre del ${quien}`);
-        return { tipoDoc: doc.length === 11 ? '6' : '1', numDoc: doc, nombre };
-      };
-      const cuerpo = {
-        remitente: docParte(v('remDoc'), v('remNombre'), 'remitente'),
-        destinatario: docParte(v('desDoc'), v('desNombre'), 'destinatario'),
-        bienes: [{ descripcion: v('bienDesc'), cantidad: Number(v('bienCant') || '1') }],
-        pesoKg: Number(v('pesoKg').replace(',', '.')),
-        placa: v('placa').toUpperCase(),
-        conductor: { numDoc: v('conDoc'), nombres: v('conNombres'), apellidos: v('conApellidos'), licencia: v('conLicencia').toUpperCase() },
-        partida: { ubigeo: v('parUbigeo'), direccion: v('parDir') },
-        llegada: { ubigeo: v('lleUbigeo'), direccion: v('lleDir') },
-        fechaTraslado: v('fecTraslado'),
-      };
-      if (!cuerpo.bienes[0].descripcion) throw new Error('Describa los bienes a transportar');
-      if (!(cuerpo.pesoKg > 0)) throw new Error('Indique el peso total en kilos');
-      boton.disabled = true;
-      boton.textContent = 'Emitiendo…';
-      await api('/api/guias', { method: 'POST', body: JSON.stringify(cuerpo) });
-      localStorage.setItem('gre:llegada', JSON.stringify(cuerpo.llegada));
-      location.hash = '#guias';
-    } catch (e) {
-      $e.textContent = e.message;
-      $e.hidden = false;
-      boton.disabled = false;
-      boton.textContent = 'EMITIR GUÍA';
-    }
-  };
-}
-
-async function vistaGuias() {
-  const filas = await api('/api/guias');
-  const chip = (e) => { const x = ESTADOS_GUIA[e] || ESTADOS_GUIA.pendiente; return `<span class="estado ${x.clase}">${e}</span>`; };
-  $app.innerHTML = `
-    <h1>🗒️ Guías de remisión emitidas</h1>
-    <p class="no-imprimir"><a class="boton" href="#guia">🚚 Nueva guía</a></p>
-    ${filas.length === 0 ? '<p class="ayuda">Aún no hay guías.</p>' : `
-    <div class="lista-movil">
-      ${filas.map((f) => `
-        <div class="comp-fila">
-          <div>
-            <div class="num">${f.serie}-${f.correlativo} · ${esc(f.placa)}</div>
-            <div class="cli">${esc(f.remitente_nombre)} → ${esc(f.destinatario_nombre)}</div>
-            <div class="cli">${f.fecha_traslado} · ${f.peso_kg} kg</div>
-            ${f.estado === 'rechazada' && f.cdr_descripcion ? `<div class="cli" style="color:var(--rojo)">${esc(f.cdr_descripcion)}</div>` : ''}
-          </div>
-          <div class="imp">${chip(f.estado)}</div>
-        </div>`).join('')}
-    </div>
-    <table class="lista-pc">
-      <thead><tr><th>Número</th><th>Traslado</th><th>Remitente</th><th>Destinatario</th><th>Placa</th><th>Peso</th><th>Estado</th></tr></thead>
-      <tbody>
-        ${filas.map((f) => `
-          <tr>
-            <td><b>${f.serie}-${f.correlativo}</b></td>
-            <td>${f.fecha_traslado}</td>
-            <td>${esc(f.remitente_nombre)}</td>
-            <td>${esc(f.destinatario_nombre)}</td>
-            <td>${esc(f.placa)}</td>
-            <td>${f.peso_kg} kg</td>
-            <td>${chip(f.estado)}${f.estado === 'rechazada' && f.cdr_descripcion ? `<div class="ayuda">${esc(f.cdr_descripcion)}</div>` : ''}</td>
-          </tr>`).join('')}
-      </tbody>
-    </table>`}`;
 }
 
 /* ---------- Asistente de emisión: todo por toques ---------- */

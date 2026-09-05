@@ -236,7 +236,11 @@ app.post('/api/analizar-mensaje', async (c) => {
   const { texto } = await c.req.json<{ texto?: string }>().catch(() => ({}) as { texto?: string });
   if (!texto?.trim()) return c.json({ error: 'Pegue o comparta el mensaje a analizar' }, 400);
   const a = analizarMensaje(texto);
-  return c.json({ ...a, reparto: repartirMonto(a) });
+  return c.json({
+    ...a,
+    reparto: repartirMonto(a),
+    items: a.items.map((it) => ({ ...it, reparto: repartirMonto(it) })),
+  });
 });
 
 /**

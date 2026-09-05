@@ -2,30 +2,35 @@
  * Analizador de mensajes de WhatsApp / notas dictadas.
  *
  * Los clientes y choferes mandan textos como:
- *   "Ruc 20123456789 Transportes El Rapido SAC 2 pasajes pucallpa aguaytia 60 soles"
- *   "dni 44556677 juan perez encomienda 1 caja S/ 25"
- * El analizador extrae documento, nombre, cantidad, monto y descripción con
- * reglas deterministas; lo que no se pueda deducir queda en `faltantes` para
- * que la app se lo pregunte a la emisora.
+ *   "10729755520 3 pasajes pucallpa san alejandro a 50
+ *    2 pasajes san alejandro pucallpa 50"
+ * El analizador saca el documento y nombre del mensaje completo, y luego
+ * analiza LÍNEA POR LÍNEA para detectar varios ítems (cantidad, monto,
+ * descripción, fechas). Lo que no se pueda deducir queda en `faltantes`.
  */
 
-export interface MensajeAnalizado {
+export interface ItemAnalizado {
+  descripcion?: string;
+  cantidad: number;
+  /** Monto TOTAL del ítem en céntimos (si se detectó). */
+  montoTotalCentimos?: number;
+  /** true si el monto se dijo por unidad ("a 50", "50 por día/cada uno"). */
+  montoPorUnidad?: boolean;
+  /** Rango de fechas ("del 3 al 5 de agosto"), en YYYY-MM-DD. */
+  fechas?: { desde: string; hasta: string; dias: number };
+  /** 'monto' | 'descripcion' que falten en este ítem. */
+  faltantes: string[];
+}
+
+export interface MensajeAnalizado extends ItemAnalizado {
   tipoDoc?: '1' | '6'; // DNI | RUC
   numDoc?: string;
   /** Nombre/razón social detectado en el texto (la consulta RUC/DNI manda). */
   nombre?: string;
-  descripcion?: string;
-  cantidad: number;
-  /** Monto TOTAL en céntimos (si se detectó). */
-  montoTotalCentimos?: number;
-  /** Campos que faltan y hay que preguntar: 'documento' | 'monto' | 'descripcion'. */
-  faltantes: string[];
+  /** Todos los ítems detectados (los campos heredados son los del primero). */
+  items: ItemAnalizado[];
   /** Notas para mostrar (ej. se asumió que el monto es el total). */
   avisos: string[];
-  /** Rango de fechas dicho/escrito ("del 3 al 5 de agosto"), en YYYY-MM-DD. */
-  fechas?: { desde: string; hasta: string; dias: number };
-  /** true si el monto se dijo por unidad ("a 40 soles", "40 por día/cada uno"). */
-  montoPorUnidad?: boolean;
 }
 
 const MESES: Record<string, number> = {
@@ -34,7 +39,7 @@ const MESES: Record<string, number> = {
 };
 
 /** "del 3 de agosto al 5 de agosto", "del 3 al 5 de agosto", "del 03/08 al 05/08". */
-function extraerFechas(texto: string): MensajeAnalizado['fechas'] {
+function extraerFechas(texto: string): ItemAnalizado['fechas'] {
   const anio = new Date(Date.now() - 5 * 3600 * 1000).getFullYear();
   const arma = (d1: number, m1: number, d2: number, m2: number) => {
     const desde = new Date(Date.UTC(anio, m1 - 1, d1));
@@ -63,7 +68,7 @@ const PALABRAS_CANTIDAD =
   /(\d{1,3})\s*(pasajes?|boletos?|encomiendas?|cajas?|bultos?|sacos?|paquetes?|sobres?|noches?|d[ií]as?|habitaci[oó]n(?:es)?|personas?|unidades?)/i;
 
 const PALABRAS_SERVICIO =
-  /pasajes?|boletos?|encomiendas?|cajas?|bultos?|sacos?|paquetes?|sobres?|noches?|hospedaje|habitaci[oó]n|carga|flete|viaje|traslado|servicio/i;
+  /pasajes?|boletos?|encomiendas?|cajas?|bultos?|sacos?|paquetes?|sobres?|noches?|hospedaje|habitaci[oó]n|alquiler|carga|flete|viaje|traslado|servicio/i;
 
 function limpiar(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
@@ -74,44 +79,20 @@ function aCentimos(num: string): number {
   return Math.round(parseFloat(num.replace(',', '.')) * 100);
 }
 
-export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
-  const out: MensajeAnalizado = { cantidad: 1, faltantes: [], avisos: [] };
-  let texto = ` ${textoCrudo.replace(/\r/g, '')} `;
+/** Analiza UNA línea como ítem: fechas, cantidad, monto y descripción. */
+function analizarItem(lineaCruda: string): ItemAnalizado {
+  const out: ItemAnalizado = { cantidad: 1, faltantes: [] };
+  let texto = ` ${lineaCruda} `;
 
-  // 0) Fechas habladas/escritas ("del 3 al 5 de agosto"): sirven de cantidad
-  //    de días en hospedaje y no deben confundirse con montos o cantidades.
+  // Fechas ("del 3 al 5 de agosto"): fijan los días y no son montos.
   out.fechas = extraerFechas(texto);
   if (out.fechas) {
     texto = texto.replace(
       /del?\s+\d{1,2}(?:\s+de\s+[a-zñ]+|\/\d{1,2})?\s+(?:al|hasta(?:\s+el)?)\s+\d{1,2}(?:\s+de\s+[a-zñ]+|\/\d{1,2})/gi,
-      ` FECHASRANGO `,
+      ' FECHASRANGO ',
     );
     if (out.fechas.dias > 0) out.cantidad = out.fechas.dias;
-  }
-
-  // 1) Documento: RUC (11 dígitos, empieza en 10/15/17/20) o DNI (8 dígitos).
-  const ruc = texto.match(/\b(?:10|15|17|20)\d{9}\b/);
-  if (ruc) {
-    out.tipoDoc = '6';
-    out.numDoc = ruc[0];
-    texto = texto.replace(ruc[0], ' ');
   } else {
-    // DNI: 8 dígitos que no sean parte de un número mayor ni un monto decimal.
-    const dni = texto.match(/(?<![\d.,])(\d{8})(?![\d.,])/);
-    if (dni) {
-      out.tipoDoc = '1';
-      out.numDoc = dni[1]!;
-      texto = texto.replace(dni[1]!, ' ');
-    } else {
-      out.faltantes.push('documento');
-    }
-  }
-
-  // Quitar etiquetas del documento para que no ensucien la descripción.
-  texto = texto.replace(/\b(ruc|dni|doc(?:umento)?|n[uú]mero)\b\s*[:.]?/gi, ' ');
-
-  // 2) Cantidad ("2 pasajes", "x2"); las fechas ya fijaron los días si las hubo.
-  if (!out.fechas) {
     const cant = texto.match(PALABRAS_CANTIDAD) ?? texto.match(/\bx\s?(\d{1,3})\b/i);
     if (cant) {
       const n = parseInt(cant[1]!, 10);
@@ -119,7 +100,7 @@ export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
     }
   }
 
-  // 3) Monto: con S/ o "soles", o con decimales; si hay varios, el último.
+  // Monto: con S/ o "soles", o con decimales; entre varios, el último.
   const montos: Array<{ valor: number; texto: string; fuerte: boolean }> = [];
   const reMonto = /(?:s\/\.?\s*)?(\d{1,6}(?:[.,]\d{1,2})?)(\s*(?:soles|sol)\b)?/gi;
   for (const m of texto.matchAll(reMonto)) {
@@ -127,54 +108,29 @@ export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
     const conDecimales = /[.,]\d{1,2}$/.test(m[1]!);
     const valor = aCentimos(m[1]!);
     if (valor <= 0) continue;
-    // Un entero suelto igual a la cantidad detectada no es un monto.
-    if (!conSimbolo && !conDecimales && valor === out.cantidad * 100) continue;
+    if (!conSimbolo && !conDecimales && valor === out.cantidad * 100) continue; // es la cantidad
     if (conSimbolo || conDecimales) montos.push({ valor, texto: m[0], fuerte: true });
     else if (valor >= 300) montos.push({ valor, texto: m[0], fuerte: false }); // >= S/3 suelto
   }
   const elegido = montos.filter((m) => m.fuerte).pop() ?? montos.pop();
   if (elegido) {
-    out.montoTotalCentimos = elegido.valor;
-    // "a 40 soles", "40 por día", "40 cada uno": el monto es por unidad.
+    // "a 50", "50 por día", "50 cada uno": el monto es por unidad.
     const idx = texto.indexOf(elegido.texto);
     const antes = texto.slice(Math.max(0, idx - 12), idx);
     const despues = texto.slice(idx + elegido.texto.length, idx + elegido.texto.length + 22);
     out.montoPorUnidad =
       out.cantidad > 1 &&
       (/\ba\s*$/i.test(antes) || /^\s*(por|cada)\b/i.test(despues) || /\b(por\s+(d[ií]a|noche|pasaje|persona|unidad)|cada\s+un[oa])\b/i.test(despues));
+    out.montoTotalCentimos = out.montoPorUnidad ? elegido.valor * out.cantidad : elegido.valor;
     texto = texto.replace(elegido.texto, ' ');
-    if (out.montoPorUnidad) {
-      out.montoTotalCentimos = elegido.valor * out.cantidad;
-      out.avisos.push(`S/ ${(elegido.valor / 100).toFixed(2)} por unidad × ${out.cantidad} = S/ ${((elegido.valor * out.cantidad) / 100).toFixed(2)} en total.`);
-    } else if (out.cantidad > 1) {
-      out.avisos.push(`Se asumió que S/ ${(elegido.valor / 100).toFixed(2)} es el TOTAL por las ${out.cantidad} unidades.`);
-    }
   } else {
     out.faltantes.push('monto');
   }
   texto = texto.replace(/\b(s\/\.?|soles?|monto|total|precio|costo)\b\s*[:.]?/gi, ' ');
 
-  // 4) Nombre: tras etiquetas típicas, o línea con forma de razón social.
-  const etiquetaNombre = textoCrudo.match(
-    /(?:raz[oó]n social|a nombre de|nombre|sr\.?a?|se[nñ]or(?:a)?|cliente)\s*[:.]?\s+([a-záéíóúñ&.\- ]{6,60})/i,
-  );
-  if (etiquetaNombre) {
-    out.nombre = limpiar(etiquetaNombre[1]!).replace(/\b(con|por|para|ruc|dni)\b.*$/i, '').trim();
-  } else {
-    const empresa = textoCrudo.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ&.\- ]{5,60}\b(?:s\.?a\.?c\.?|e\.?i\.?r\.?l\.?|s\.?r\.?l\.?|s\.?a\.?a?\.?))(?=\s|$)/i);
-    if (empresa) out.nombre = limpiar(empresa[1]!);
-  }
-  if (out.nombre) texto = texto.replace(out.nombre, ' ');
-
-  // 5) Descripción: la línea con palabras de servicio; si no, lo que quede.
-  const lineas = texto
-    .split('\n')
-    .map(limpiar)
-    .filter((l) => l.length >= 3 && /[a-záéíóúñ]/i.test(l));
-  const conServicio = lineas.filter((l) => PALABRAS_SERVICIO.test(l));
-  let desc = (conServicio.length ? conServicio : lineas).join(' ');
-  desc = limpiar(
-    desc
+  // Descripción: lo que queda de la línea, sin números largos ni símbolos.
+  let desc = limpiar(
+    texto
       .replace(/(?<![\d.,])\d{4,}(?![\d.,])/g, ' ') // números largos sueltos (teléfonos)
       .replace(/[|•*_~]/g, ' '),
   );
@@ -183,21 +139,102 @@ export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
     desc = limpiar(desc.replace(/FECHASRANGO/g, `del ${f(out.fechas.desde)} al ${f(out.fechas.hasta)}`));
   }
   desc = desc.replace(/\s+(a|de|por|con|y|en)$/i, '').trim();
-  if (desc.length >= 3) {
+  if (desc.length >= 3 && /[a-záéíóúñ]/i.test(desc)) {
     out.descripcion = desc.charAt(0).toUpperCase() + desc.slice(1);
   } else {
     out.faltantes.push('descripcion');
   }
-
   return out;
 }
 
+export function analizarMensaje(textoCrudo: string): MensajeAnalizado {
+  const global: Pick<MensajeAnalizado, 'tipoDoc' | 'numDoc' | 'nombre'> = {};
+  let texto = ` ${textoCrudo.replace(/\r/g, '')} `;
+
+  // 1) Documento (una sola vez para todo el mensaje).
+  const ruc = texto.match(/\b(?:10|15|17|20)\d{9}\b/);
+  if (ruc) {
+    global.tipoDoc = '6';
+    global.numDoc = ruc[0];
+    texto = texto.replace(ruc[0], ' ');
+  } else {
+    const dni = texto.match(/(?<![\d.,])(\d{8})(?![\d.,])/);
+    if (dni) {
+      global.tipoDoc = '1';
+      global.numDoc = dni[1]!;
+      texto = texto.replace(dni[1]!, ' ');
+    }
+  }
+  texto = texto.replace(/\b(ruc|dni|doc(?:umento)?|n[uú]mero)\b\s*[:.]?/gi, ' ');
+
+  // 2) Nombre: tras etiquetas típicas, o con sufijo societario.
+  const etiquetaNombre = texto.match(
+    /(?:raz[oó]n social|a nombre de|nombre|sr\.?a?|se[nñ]or(?:a)?|cliente)\s*[:.]?\s+([a-záéíóúñ&.\- ]{6,60})/i,
+  );
+  if (etiquetaNombre) {
+    global.nombre = limpiar(etiquetaNombre[1]!).replace(/\b(con|por|para)\b.*$/i, '').trim();
+    texto = texto.replace(etiquetaNombre[0], ' '); // fuera la etiqueta Y el nombre
+  } else {
+    const empresa = texto.match(/([A-ZÁÉÍÓÚÑa-záéíóúñ&.\- ]{5,60}\b(?:s\.?a\.?c\.?|e\.?i\.?r\.?l\.?|s\.?r\.?l\.?|s\.?a\.?a?\.?))(?=\s|$)/i);
+    if (empresa) {
+      global.nombre = limpiar(empresa[1]!);
+      texto = texto.replace(empresa[1]!, ' ');
+    }
+  }
+
+  // 3) Ítems: una línea = un ítem; las líneas sueltas se pegan a la anterior.
+  const items: ItemAnalizado[] = [];
+  const avisos: string[] = [];
+  for (const linea of texto.split('\n')) {
+    if (!limpiar(linea)) continue;
+    const cand = analizarItem(linea);
+    const sinNada = cand.faltantes.includes('descripcion') && cand.faltantes.includes('monto');
+    if (sinNada) continue;
+    const previo = items[items.length - 1];
+    if (cand.faltantes.includes('descripcion') && cand.montoTotalCentimos && previo?.faltantes.includes('monto')) {
+      // Línea solo-monto ("total 35.50"): completa el ítem anterior.
+      previo.montoTotalCentimos = cand.montoTotalCentimos;
+      previo.faltantes = previo.faltantes.filter((f) => f !== 'monto');
+    } else if (cand.faltantes.includes('monto') && cand.descripcion && !PALABRAS_SERVICIO.test(cand.descripcion) && previo) {
+      // Línea solo-texto sin pinta de servicio: alarga la descripción anterior.
+      previo.descripcion = limpiar(`${previo.descripcion ?? ''} ${cand.descripcion}`);
+    } else {
+      items.push(cand);
+    }
+  }
+  if (items.length === 0) items.push({ cantidad: 1, faltantes: ['descripcion', 'monto'] });
+
+  // 4) Si un ítem fijó precio POR UNIDAD, las líneas hermanas con el mismo
+  //    número suelto también son por unidad ("3 pasajes a 50 / 2 pasajes 50").
+  const unitarios = items.filter((it) => it.montoPorUnidad);
+  for (const it of items) {
+    if (it.montoPorUnidad || !it.montoTotalCentimos || it.cantidad <= 1) continue;
+    if (unitarios.some((u) => u.montoTotalCentimos! / u.cantidad === it.montoTotalCentimos)) {
+      it.montoPorUnidad = true;
+      it.montoTotalCentimos = it.montoTotalCentimos * it.cantidad;
+    }
+  }
+
+  for (const it of items) {
+    if (!it.montoTotalCentimos) continue;
+    if (it.montoPorUnidad) {
+      avisos.push(`${it.descripcion ?? 'Ítem'}: S/ ${(it.montoTotalCentimos / it.cantidad / 100).toFixed(2)} por unidad × ${it.cantidad} = S/ ${(it.montoTotalCentimos / 100).toFixed(2)}.`);
+    } else if (it.cantidad > 1) {
+      avisos.push(`${it.descripcion ?? 'Ítem'}: se asumió que S/ ${(it.montoTotalCentimos / 100).toFixed(2)} es el TOTAL por las ${it.cantidad} unidades.`);
+    }
+  }
+
+  const primero = items[0]!;
+  const faltantes = [...(global.numDoc ? [] : ['documento']), ...primero.faltantes];
+  return { ...primero, ...global, items, faltantes, avisos };
+}
+
 /**
- * Distribuye el monto total en cantidad y precio unitario en céntimos.
- * Si no divide exacto, se emite como 1 ítem por el total (con la cantidad
- * mencionada en la descripción) para que los totales cuadren al céntimo.
+ * Distribuye el monto total del ítem en cantidad y precio unitario (céntimos).
+ * Si no divide exacto, se emite como 1 ítem por el total para que los
+ * céntimos siempre cuadren.
  */
-export function repartirMonto(a: MensajeAnalizado): { cantidad: number; precioUnitarioCentimos: number } | null {
+export function repartirMonto(a: ItemAnalizado): { cantidad: number; precioUnitarioCentimos: number } | null {
   if (!a.montoTotalCentimos) return null;
   if (a.cantidad > 1 && a.montoTotalCentimos % a.cantidad === 0) {
     return { cantidad: a.cantidad, precioUnitarioCentimos: a.montoTotalCentimos / a.cantidad };

@@ -90,6 +90,23 @@ describe('analizador de mensajes de WhatsApp', () => {
     expect(a.descripcion).toMatch(/hospedaje del 03\/08 al 05\/08/i);
   });
 
+  it('cada línea es un producto distinto (caso real de ida y vuelta)', () => {
+    const a = analizarMensaje('10729755520 3 pasajes pucallpa san alejandro a 50\n2 pasajes san alejandro pucallpa 50');
+    expect(a.tipoDoc).toBe('6'); // RUC de persona natural (empieza en 10)
+    expect(a.numDoc).toBe('10729755520');
+    expect(a.items.length).toBe(2);
+    const [ida, vuelta] = a.items;
+    expect(ida!.descripcion).toMatch(/pasajes pucallpa san alejandro/i);
+    expect(ida!.cantidad).toBe(3);
+    expect(ida!.montoPorUnidad).toBe(true);
+    expect(ida!.montoTotalCentimos).toBe(15000); // 3 × 50
+    expect(vuelta!.descripcion).toMatch(/pasajes san alejandro pucallpa/i);
+    expect(vuelta!.cantidad).toBe(2);
+    // el "50" suelto hereda el precio por unidad del ítem hermano
+    expect(vuelta!.montoPorUnidad).toBe(true);
+    expect(vuelta!.montoTotalCentimos).toBe(10000); // 2 × 50
+  });
+
   it('mensajes separados unidos: documento en uno, detalle en otro', () => {
     const a = analizarMensaje('ruc 20123456789\n\nhospedaje 2 noches habitacion doble 160.00');
     expect(a.numDoc).toBe('20123456789');
