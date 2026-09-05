@@ -30,6 +30,18 @@ html, body {
   font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   font-size: 16px;
   line-height: 1.45;
+  overflow-x: clip; /* ningún elemento puede empujar la página de costado */
+  width: 100%;
+}
+
+/* Zona de la barra de estado del celular: siempre pintada de verde. */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: env(safe-area-inset-top, 0px);
+  background: var(--acento-osc);
+  z-index: 30;
 }
 
 /* ---------- Cabecera ---------- */
@@ -39,6 +51,7 @@ html, body {
   position: sticky;
   top: 0;
   z-index: 10;
+  padding-top: env(safe-area-inset-top, 0px);
 }
 .cabecera-int {
   max-width: 1080px;
@@ -214,7 +227,7 @@ input::placeholder { color: #98a2b3; }
 input:focus, select:focus { outline: none; border-color: var(--acento); background: #fff; box-shadow: 0 0 0 4px rgba(0, 135, 90, 0.12); }
 input.monto { font-size: 1.7rem; font-weight: 800; text-align: right; font-variant-numeric: tabular-nums; }
 .fila { display: flex; gap: 10px; }
-.fila > * { flex: 1; }
+.fila > * { flex: 1; min-width: 0; }
 .ayuda { color: var(--gris); font-size: 0.82rem; margin-top: 6px; }
 .error {
   color: var(--rojo);
