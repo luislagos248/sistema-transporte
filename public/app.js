@@ -121,12 +121,9 @@ async function vistaHome() {
       <div class="monto" id="ventasHoy">S/ —</div>
       <div class="detalle" id="detalleHoy">Cargando…</div>
     </div>
-    <a class="boton boton-grande" href="#emitir" style="display:block;margin-bottom:16px">🧾 EMITIR BOLETA O FACTURA</a>
-    <div class="accesos accesos-3">
-      <a class="acceso" href="#importar"><span class="icono">📥</span>Importar mensaje</a>
-      <a class="acceso" href="#lista"><span class="icono">📋</span>Comprobantes</a>
-      <a class="acceso" href="#reportes"><span class="icono">📊</span>Reportes</a>
-    </div>`;
+    <a class="boton boton-grande" href="#emitir" style="display:block;margin-bottom:14px">🧾 EMITIR BOLETA O FACTURA</a>
+    <a class="boton boton-grande boton-suave" href="#importar" style="display:block">📷 ESCANEAR O IMPORTAR MENSAJE</a>
+    <p class="ayuda" style="text-align:center;margin-top:14px">Comprobantes y Reportes están en la barra de abajo.</p>`;
 
   // Resumen del día, como el saldo de un banco.
   try {
